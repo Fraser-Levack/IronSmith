@@ -1,2 +1,19 @@
-// Creates a cube, spins it like a diamond, THEN moves it into the air
-move(0, 10, 0, rotateZ(45, cube(5,5,5)))
+// Variables for our sword dimensions (these work because they are numbers!)
+blade_w = 2
+blade_h = 20
+blade_d = 0.5
+
+guard_w = 8
+guard_h = 2
+guard_d = 1
+
+handle_w = 1.5
+handle_h = 6
+handle_d = 1.5
+
+// Build the sword and move it all in one giant nested statement!
+move(0, -5, 0, rotateZ(45, group(
+    move(0, 10, 0, cube(blade_w, blade_h, blade_d)),   // Blade
+    move(0, 0, 0, cube(guard_w, guard_h, guard_d)),    // Guard 
+    move(0, -4, 0, cube(handle_w, handle_h, handle_d)) // Handle
+)))

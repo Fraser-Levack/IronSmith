@@ -115,6 +115,15 @@ evalShape env (RotateZ edeg innerShape) currentTransform vCount =
         newTransform pt = currentTransform (rotateZPt deg pt)
     in evalShape env innerShape newTransform vCount
 
+evalShape env (Group shapes) currentTransform vCount =
+    -- We use foldl to thread the vCount and the string through the list of shapes
+    foldl evaluateOneShape ("", vCount) shapes
+  where
+    -- This helper processes a single shape in the group
+    evaluateOneShape (accString, currentV) shape =
+        let (shapeString, nextV) = evalShape env shape currentTransform currentV
+        in (accString ++ shapeString, nextV)
+
 
 -- NEW: runScript now takes an Int representing the current vertex count
 runScript :: Env -> Int -> Script -> String

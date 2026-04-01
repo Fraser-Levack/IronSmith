@@ -15,6 +15,7 @@ data Shape
     | RotateX Expr Shape
     | RotateY Expr Shape
     | RotateZ Expr Shape
+    | Group [Shape]
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith

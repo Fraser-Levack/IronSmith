@@ -25,11 +25,11 @@ symbol = L.symbol sc
 
 -- Parses numbers
 float :: Parser Float
-float = lexeme (try L.float <|> (fromIntegral <$> L.decimal))
+float = lexeme (L.signed (return ()) (try L.float <|> (fromIntegral <$> L.decimal)))
 
 -- Parses variable names (e.g., "x", "myVar")
 identifier :: Parser String
-identifier = lexeme ((:) <$> letterChar <*> many alphaNumChar)
+identifier = lexeme ((:) <$> letterChar <*> many (alphaNumChar <|> char '_'))
 
 -------------------------------------------------
 -- 1. EXPRESSION PARSER (The Math)
@@ -106,9 +106,17 @@ pRotateZ = do
     _ <- symbol ")"
     return (RotateZ deg innerShape)
 
+pGroup :: Parser Shape
+pGroup = do
+    _ <- symbol "group("
+    -- sepBy automatically handles reading items separated by commas!
+    shapes <- pShape `sepBy` symbol ","
+    _ <- symbol ")"
+    return (Group shapes)
+
 -- UPDATE pShape to include try pRotateX
 pShape :: Parser Shape
-pShape = try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> pCube
+pShape = try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> pCube <|> pGroup
 -------------------------------------------------
 -- 3. STATEMENT PARSERS (The Actions)
 -------------------------------------------------
