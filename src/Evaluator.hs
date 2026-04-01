@@ -57,22 +57,80 @@ evalExpr env (Var name)  =
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
 
-generateObjString :: [Point] -> Int -> String
-generateObjString vertices vOffset = 
+type Face = [Int]
+
+generateMeshString :: [Point] -> [Face] -> Int -> String
+generateMeshString vertices faces vOffset = 
     let 
-        -- Convert each (x,y,z) point into a "v x y z" string
         vStrings = map (\(x,y,z) -> "v " ++ show x ++ " " ++ show y ++ " " ++ show z) vertices
         
-        face a b c = "f " ++ show (a + vOffset) ++ " " ++ show (b + vOffset) ++ " " ++ show (c + vOffset)
-        fStrings = [
-            face 1 2 3, face 1 3 4, 
-            face 2 6 7, face 2 7 3, 
-            face 6 5 8, face 6 8 7, 
-            face 5 1 4, face 5 4 8, 
-            face 4 3 7, face 4 7 8, 
-            face 5 6 2, face 5 2 1
-            ]
+        -- Formats a list of integers into an OBJ face string: [1,2,3] -> "f 1 2 3"
+        -- We add the vOffset to every index to support multiple shapes!
+        formatFace f = "f " ++ unwords (map (\idx -> show (idx + vOffset)) f)
+        fStrings = map formatFace faces
+        
     in unlines (vStrings ++ fStrings)
+
+-- Returns (Vertices, Faces)
+generateCylinder :: Float -> Float -> Int -> ([Point], [Face])
+generateCylinder r h def = (pts, bottomCap ++ topCap ++ sideFaces)
+  where
+    hd = h / 2.0
+    -- Calculate the angles for the circumference
+    angles = [ 2 * pi * fromIntegral i / fromIntegral def | i <- [0 .. def-1] ]
+    
+    -- Generate the rings
+    bottomRing = [ (r * cos a, -hd, r * sin a) | a <- angles ]
+    topRing    = [ (r * cos a,  hd, r * sin a) | a <- angles ]
+    
+    -- Vertex List: Center Bottom (1), Center Top (2), Bottom Ring (3 to def+2), Top Ring
+    pts = [(0, -hd, 0), (0, hd, 0)] ++ bottomRing ++ topRing
+    
+    -- Helpers to safely wrap indices around the circle
+    botIdx i = 3 + (i `mod` def)
+    topIdx i = 3 + def + (i `mod` def)
+    
+    -- Triangle fans for the caps
+    bottomCap = [ [1, botIdx i, botIdx (i+1)] | i <- [0 .. def-1] ]
+    topCap    = [ [2, topIdx (i+1), topIdx i] | i <- [0 .. def-1] ]
+    
+    -- Quads (split into 2 triangles) for the sides
+    sideFaces = concat [ 
+        [ [botIdx i, topIdx i, topIdx (i+1)], 
+          [botIdx i, topIdx (i+1), botIdx (i+1)] ] 
+        | i <- [0 .. def-1] ]
+
+generateSphere :: Float -> Int -> ([Point], [Face])
+generateSphere r def = (pts, faces)
+  where
+    -- def acts as both horizontal and vertical resolution (minimum 3)
+    res = max 3 def 
+    
+    -- Slices (longitude) and Stacks (latitude)
+    lonAngles = [ 2 * pi * fromIntegral i / fromIntegral res | i <- [0 .. res-1] ]
+    latAngles = [ pi * fromIntegral j / fromIntegral res | j <- [1 .. res-1] ]
+    
+    -- South Pole (1), North Pole (2)
+    poles = [(0, r, 0), (0, -r, 0)]
+    
+    -- Generate the middle rings
+    rings = [ (r * sin lat * cos lon, r * cos lat, r * sin lat * sin lon) 
+            | lat <- latAngles, lon <- lonAngles ]
+    
+    pts = poles ++ rings
+    
+    -- Math to connect the rings into faces... (Simplified for brevity)
+    idx ring slice = 3 + ring * res + (slice `mod` res)
+    
+    bottomCap = [ [1, idx 0 (i+1), idx 0 i] | i <- [0 .. res-1] ]
+    topCap    = [ [2, idx (res-2) i, idx (res-2) (i+1)] | i <- [0 .. res-1] ]
+    
+    quads = concat [
+        [ [idx j i, idx j (i+1), idx (j+1) (i+1)],
+          [idx j i, idx (j+1) (i+1), idx (j+1) i] ]
+        | j <- [0 .. res-3], i <- [0 .. res-1] ]
+        
+    faces = bottomCap ++ topCap ++ quads
 
 evalShape :: Env -> Shape -> Transform -> Int -> (String, Int)
 evalShape env (ShapeRef name) currentTransform vCount =
@@ -85,21 +143,42 @@ evalShape env (Cube ex ey ez) transform vCount =
     let x = evalExpr env ex
         y = evalExpr env ey
         z = evalExpr env ez
+        hx = x / 2.0; hy = y / 2.0; hz = z / 2.0
         
-        -- Calculate the half-dimensions to center the cube
-        hx = x / 2.0
-        hy = y / 2.0
-        hz = z / 2.0
-        
-        -- The 8 raw corners of the cube, centered around (0,0,0)
         rawPoints = [
             (-hx, -hy, -hz), ( hx, -hy, -hz), ( hx,  hy, -hz), (-hx,  hy, -hz),
             (-hx, -hy,  hz), ( hx, -hy,  hz), ( hx,  hy,  hz), (-hx,  hy,  hz)
             ]
             
+        -- The cube provides its own faces now!
+        cubeFaces = [
+            [1,2,3], [1,3,4], [2,6,7], [2,7,3], 
+            [6,5,8], [6,8,7], [5,1,4], [5,4,8], 
+            [4,3,7], [4,7,8], [5,6,2], [5,2,1]
+            ]
+            
         transformedPoints = map transform rawPoints
-        objStr = generateObjString transformedPoints vCount
-    in (objStr, vCount + 8)
+        objStr = generateMeshString transformedPoints cubeFaces vCount
+    in (objStr, vCount + length rawPoints) -- Dynamically increment vertex count!
+
+evalShape env (Cylinder er ed eh) transform vCount =
+    let r = evalExpr env er
+        def = round (evalExpr env ed) -- Convert float expression to Int
+        h = evalExpr env eh
+        
+        (rawPoints, faces) = generateCylinder r h def
+        transformedPoints = map transform rawPoints
+        objStr = generateMeshString transformedPoints faces vCount
+    in (objStr, vCount + length rawPoints)
+
+evalShape env (Sphere er ed) transform vCount =
+    let r = evalExpr env er
+        def = round (evalExpr env ed)
+        
+        (rawPoints, faces) = generateSphere r def
+        transformedPoints = map transform rawPoints
+        objStr = generateMeshString transformedPoints faces vCount
+    in (objStr, vCount + length rawPoints)
 
 -- For Move, we combine the current transform with a new translation
 evalShape env (Move ex ey ez innerShape) currentTransform vCount =

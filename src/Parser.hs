@@ -69,6 +69,21 @@ pCube = do
     _ <- symbol ")"
     return (Cube x y z)
 
+pCylinder :: Parser Shape
+pCylinder = do
+    _ <- symbol "cylinder("
+    r <- pExpr; _ <- symbol ","
+    d <- pExpr; _ <- symbol ","
+    h <- pExpr; _ <- symbol ")"
+    return (Cylinder r d h)
+
+pSphere :: Parser Shape
+pSphere = do
+    _ <- symbol "sphere("
+    r <- pExpr; _ <- symbol ","
+    d <- pExpr; _ <- symbol ")"
+    return (Sphere r d)
+
 pMove :: Parser Shape
 pMove = do
     _ <- symbol "move("
@@ -122,7 +137,7 @@ pShapeRef :: Parser Shape
 pShapeRef = ShapeRef <$> identifier
 
 pShape :: Parser Shape
-pShape = try pGroup <|> try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> try pCube <|> pShapeRef
+pShape = try pGroup <|> try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> try pCylinder <|> try pSphere <|> try pCube <|> pShapeRef
 -------------------------------------------------
 -- 3. STATEMENT PARSERS (The Actions)
 -------------------------------------------------

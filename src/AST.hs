@@ -11,6 +11,8 @@ data Expr
 -- 2. Shapes now accept Expressions instead of raw Floats
 data Shape 
     = Cube Expr Expr Expr
+    | Cylinder Expr Expr Expr
+    | Sphere Expr Expr
     | Move Expr Expr Expr Shape
     | RotateX Expr Shape
     | RotateY Expr Shape
