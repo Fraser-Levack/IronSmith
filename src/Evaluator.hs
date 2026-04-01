@@ -29,6 +29,21 @@ rotateXPt deg (x, y, z) =
         newZ = y * sin r + z * cos r
     in (x, newY, newZ)
 
+-- Rotate a point around the Y-axis
+rotateYPt :: Float -> Transform
+rotateYPt deg (x, y, z) = 
+    let r = degToRad deg
+        newX = x * cos r + z * sin r
+        newZ = -(x * sin r) + z * cos r
+    in (newX, y, newZ)
+
+-- Rotate a point around the Z-axis
+rotateZPt :: Float -> Transform
+rotateZPt deg (x, y, z) = 
+    let r = degToRad deg
+        newX = x * cos r - y * sin r
+        newY = x * sin r + y * cos r
+    in (newX, newY, z)
 
 evalExpr :: Env -> Expr -> Float
 evalExpr _   (Lit val)   = val
@@ -59,15 +74,18 @@ evalShape env (Cube ex ey ez) transform vCount =
         y = evalExpr env ey
         z = evalExpr env ez
         
-        -- The 8 raw corners of the cube
+        -- Calculate the half-dimensions to center the cube
+        hx = x / 2.0
+        hy = y / 2.0
+        hz = z / 2.0
+        
+        -- The 8 raw corners of the cube, centered around (0,0,0)
         rawPoints = [
-            (0,0,0), (x,0,0), (x,y,0), (0,y,0),
-            (0,0,z), (x,0,z), (x,y,z), (0,y,z)
+            (-hx, -hy, -hz), ( hx, -hy, -hz), ( hx,  hy, -hz), (-hx,  hy, -hz),
+            (-hx, -hy,  hz), ( hx, -hy,  hz), ( hx,  hy,  hz), (-hx,  hy,  hz)
             ]
             
-        -- Magic! Apply the accumulated transform function to all 8 points
         transformedPoints = map transform rawPoints
-        
         objStr = generateObjString transformedPoints vCount
     in (objStr, vCount + 8)
 
@@ -86,6 +104,17 @@ evalShape env (RotateX edeg innerShape) currentTransform vCount =
         -- Compose functions: apply rotation first, THEN the current transform
         newTransform pt = currentTransform (rotateXPt deg pt)
     in evalShape env innerShape newTransform vCount
+
+evalShape env (RotateY edeg innerShape) currentTransform vCount =
+    let deg = evalExpr env edeg
+        newTransform pt = currentTransform (rotateYPt deg pt)
+    in evalShape env innerShape newTransform vCount
+
+evalShape env (RotateZ edeg innerShape) currentTransform vCount =
+    let deg = evalExpr env edeg
+        newTransform pt = currentTransform (rotateZPt deg pt)
+    in evalShape env innerShape newTransform vCount
+
 
 -- NEW: runScript now takes an Int representing the current vertex count
 runScript :: Env -> Int -> Script -> String

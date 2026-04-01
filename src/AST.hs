@@ -13,6 +13,8 @@ data Shape
     = Cube Expr Expr Expr
     | Move Expr Expr Expr Shape
     | RotateX Expr Shape
+    | RotateY Expr Shape
+    | RotateZ Expr Shape
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith

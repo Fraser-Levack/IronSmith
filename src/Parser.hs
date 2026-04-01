@@ -88,9 +88,27 @@ pRotateX = do
     _ <- symbol ")"
     return (RotateX deg innerShape)
 
+pRotateY :: Parser Shape
+pRotateY = do
+    _ <- symbol "rotateY("
+    deg <- pExpr
+    _ <- symbol ","
+    innerShape <- pShape
+    _ <- symbol ")"
+    return (RotateY deg innerShape)
+
+pRotateZ :: Parser Shape
+pRotateZ = do
+    _ <- symbol "rotateZ("
+    deg <- pExpr
+    _ <- symbol ","
+    innerShape <- pShape
+    _ <- symbol ")"
+    return (RotateZ deg innerShape)
+
 -- UPDATE pShape to include try pRotateX
 pShape :: Parser Shape
-pShape = try pRotateX <|> try pMove <|> pCube
+pShape = try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> pCube
 -------------------------------------------------
 -- 3. STATEMENT PARSERS (The Actions)
 -------------------------------------------------

@@ -1,9 +1,2 @@
-// A cube at the origin
-cube(5, 5, 5)
-
-// A cube moved 10 units to the right
-move(10, 0, 0, cube(5, 5, 5))
-
-// A cube moved using variables and nested moves!
-offset = 5
-move(0, offset, 0, move(0, offset, 0, cube(2, 2, 2)))
+// Creates a cube, spins it like a diamond, THEN moves it into the air
+move(0, 10, 0, rotateZ(45, cube(5,5,5)))
