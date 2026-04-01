@@ -1,4 +1,4 @@
-// Variables for our sword dimensions (these work because they are numbers!)
+// Variables for our sword
 blade_w = 2
 blade_h = 20
 blade_d = 0.5
@@ -11,9 +11,15 @@ handle_w = 1.5
 handle_h = 6
 handle_d = 1.5
 
-// Build the sword and move it all in one giant nested statement!
-move(0, -5, 0, rotateZ(45, group(
-    move(0, 10, 0, cube(blade_w, blade_h, blade_d)),   // Blade
-    move(0, 0, 0, cube(guard_w, guard_h, guard_d)),    // Guard 
-    move(0, -4, 0, cube(handle_w, handle_h, handle_d)) // Handle
-)))
+// The engine will now successfully save this massive tree to memory!
+sword = group(
+    move(0, 10, 0, cube(blade_w, blade_h, blade_d)), 
+    move(0, 0, 0, cube(guard_w, guard_h, guard_d)),  
+    move(0, -4, 0, cube(handle_w, handle_h, handle_d))
+)
+
+// Draw the variable!
+move(0, -5, 0, rotateZ(45, sword))
+
+// You can even draw a second sword easily now!
+move(20, 0, 0, rotateZ(-45, sword))

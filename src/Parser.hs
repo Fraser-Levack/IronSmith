@@ -37,8 +37,11 @@ identifier = lexeme ((:) <$> letterChar <*> many (alphaNumChar <|> char '_'))
 pTerm :: Parser Expr
 pTerm = choice
   [ Lit <$> float
-  , Var <$> identifier
-  , between (symbol "(") (symbol ")") pExpr -- Allows (x + 2)
+  , try $ do
+      name <- identifier
+      notFollowedBy (char '(') -- NEW: Reject if a parenthesis comes right after!
+      return (Var name)
+  , between (symbol "(") (symbol ")") pExpr 
   ]
 
 -- This table defines our math operators and their precedence
@@ -114,9 +117,12 @@ pGroup = do
     _ <- symbol ")"
     return (Group shapes)
 
--- UPDATE pShape to include try pRotateX
+
+pShapeRef :: Parser Shape
+pShapeRef = ShapeRef <$> identifier
+
 pShape :: Parser Shape
-pShape = try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> pCube <|> pGroup
+pShape = try pGroup <|> try pRotateX <|> try pRotateY <|> try pRotateZ <|> try pMove <|> try pCube <|> pShapeRef
 -------------------------------------------------
 -- 3. STATEMENT PARSERS (The Actions)
 -------------------------------------------------
@@ -126,11 +132,17 @@ pAssign = do
     _ <- symbol "="
     Assign name <$> pExpr
 
+pAssignShape :: Parser Statement
+pAssignShape = do
+    name <- identifier
+    _ <- symbol "="
+    AssignShape name <$> pShape
+
 pDraw :: Parser Statement
-pDraw = Draw <$> pShape  -- Draw whatever shape pShape finds
+pDraw = Draw <$> pShape
 
 pStatement :: Parser Statement
-pStatement = try pAssign <|> pDraw
+pStatement = try pAssign <|> try pAssignShape <|> pDraw
 
 -------------------------------------------------
 -- 3. SCRIPT PARSER (The Whole File)

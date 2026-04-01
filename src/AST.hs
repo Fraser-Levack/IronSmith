@@ -16,11 +16,13 @@ data Shape
     | RotateY Expr Shape
     | RotateZ Expr Shape
     | Group [Shape]
+    | ShapeRef String
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith
 data Statement 
     = Assign String Expr -- e.g., x = 10
+    | AssignShape String Shape
     | Draw Shape         -- e.g., cube(x, y, z)
     deriving (Show, Eq)
 

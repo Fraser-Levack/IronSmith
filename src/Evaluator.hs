@@ -5,12 +5,15 @@ import AST
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 
-type Env = Map.Map String Float
+data IronValue = VNum Float | VShape Shape
+
+type Env = Map.Map String IronValue
 
 type Point = (Float, Float, Float)
 
 -- A function that takes a Point and returns a modified Point
 type Transform = Point -> Point
+
 
 -- Convert Degrees to Radians
 degToRad :: Float -> Float
@@ -47,7 +50,10 @@ rotateZPt deg (x, y, z) =
 
 evalExpr :: Env -> Expr -> Float
 evalExpr _   (Lit val)   = val
-evalExpr env (Var name)  = fromMaybe 0.0 (Map.lookup name env)
+evalExpr env (Var name)  = 
+    case Map.lookup name env of
+        Just (VNum val) -> val
+        _               -> 0.0 -- If it's missing or is a shape, default to 0.0
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
 
@@ -69,6 +75,12 @@ generateObjString vertices vOffset =
     in unlines (vStrings ++ fStrings)
 
 evalShape :: Env -> Shape -> Transform -> Int -> (String, Int)
+evalShape env (ShapeRef name) currentTransform vCount =
+    case Map.lookup name env of
+        -- If it finds the shape, it recursively evaluates it!
+        Just (VShape storedShape) -> evalShape env storedShape currentTransform vCount
+        -- If the variable doesn't exist (or is a number), draw nothing
+        _ -> ("", vCount)
 evalShape env (Cube ex ey ez) transform vCount = 
     let x = evalExpr env ex
         y = evalExpr env ey
@@ -132,10 +144,14 @@ runScript env vCount (stmt:rest) = case stmt of
     
     Assign name expr -> 
         let val = evalExpr env expr
-            newEnv = Map.insert name val env
+            newEnv = Map.insert name (VNum val) env -- Wrap in VNum
         in runScript newEnv vCount rest 
         
+    -- NEW: Handle shape assignment by saving the AST into memory
+    AssignShape name shape -> 
+        let newEnv = Map.insert name (VShape shape) env -- Wrap in VShape
+        in runScript newEnv vCount rest
+        
     Draw shape -> 
-        -- Evaluate the shape starting with a (0,0,0) offset
         let (objString, newVCount) = evalShape env shape id vCount
         in objString ++ runScript env newVCount rest
