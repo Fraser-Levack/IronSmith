@@ -20,6 +20,9 @@ data Shape
     | RotateY Expr Shape
     | RotateZ Expr Shape
     | Group [Shape]
+    | Union Shape Shape
+    | Intersection Shape Shape
+    | Difference Shape Shape
     | ShapeRef String
     deriving (Show, Eq)
 

@@ -161,12 +161,33 @@ pGroup = do
     _ <- symbol ")"
     return (Group shapes)
 
+pBinaryCSG :: String -> (Shape -> Shape -> Shape) -> Parser Shape
+pBinaryCSG keyword constructor = do
+    _ <- symbol (keyword ++ "(")
+    shape1 <- pShape
+    _ <- symbol ","
+    shape2 <- pShape
+    _ <- symbol ")"
+    return (constructor shape1 shape2)
+
+pUnion :: Parser Shape
+pUnion = pBinaryCSG "union" Union
+
+pIntersection :: Parser Shape
+pIntersection = pBinaryCSG "intersection" Intersection
+
+pDifference :: Parser Shape
+pDifference = pBinaryCSG "difference" Difference
+
 
 pShapeRef :: Parser Shape
 pShapeRef = ShapeRef <$> identifier
 
 pShape :: Parser Shape
-pShape = try pGroup <|> 
+pShape = try pGroup <|>
+         try pUnion <|>
+         try pIntersection <|>
+         try pDifference <|>
          try pRotateX <|> 
          try pRotateY <|> 
          try pRotateZ <|> 
