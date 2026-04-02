@@ -84,14 +84,26 @@ pSphere = do
     d <- pExpr; _ <- symbol ")"
     return (Sphere r d)
 
-pCone :: Parser Shape
-pCone = do
+-- Parses the explicit 4-argument version: cone(r, tr, d, h)
+pCone4 :: Parser Shape
+pCone4 = do
     _ <- symbol "cone("
     r <- pExpr; _ <- symbol ","
     tr <- pExpr; _ <- symbol ","
     d <- pExpr; _ <- symbol ","
     h <- pExpr; _ <- symbol ")"
     return (Cone r tr d h)
+
+-- Parses the shorthand 3-argument version: cone(r, d, h)
+pCone3 :: Parser Shape
+pCone3 = do
+    _ <- symbol "cone("
+    r <- pExpr; _ <- symbol ","
+    -- Notice we don't parse 'tr' here!
+    d <- pExpr; _ <- symbol ","
+    h <- pExpr; _ <- symbol ")"
+    -- We secretly inject (Lit 0) as the top radius
+    return (Cone r (Lit 0) d h)
 
 pTorus :: Parser Shape
 pTorus = do
@@ -162,7 +174,8 @@ pShape = try pGroup <|>
          try pCylinder <|> 
          try pSphere <|> 
          try pCube <|> 
-         try pCone <|>
+         try pCone4 <|> 
+         try pCone3 <|>
          try pTorus <|> 
          pShapeRef
 -------------------------------------------------
