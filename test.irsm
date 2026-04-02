@@ -1,0 +1,1 @@
+intersection(cube(5,5,5), move(0,2.5,0,sphere(5,16)))

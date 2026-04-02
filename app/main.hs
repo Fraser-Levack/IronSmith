@@ -5,7 +5,6 @@ import AST
 import Parser
 import Evaluator
 import Text.Megaparsec (parse, errorBundlePretty)
-import qualified Data.Map as Map
 
 main :: IO ()
 main = do
@@ -16,7 +15,7 @@ main = do
     case parse pScript inputFile script of
         Left bundle -> putStrLn (errorBundlePretty bundle)
         Right astScript -> do
-            -- Evaluate script starting with an empty Environment AND 0 vertices
-            let objData = runScript Map.empty 0 astScript
-            writeFile "output.obj" objData
-            putStrLn "Successfully forged output.obj with translations!"
+            -- Compile the script directly to GLSL Shader code
+            let glslData = compileToGLSL astScript
+            writeFile "output.glsl" glslData
+            putStrLn "Successfully forged output.glsl with SDF math!"
