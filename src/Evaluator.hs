@@ -165,6 +165,24 @@ generateCone r tr def h = (pts, faces)
             
         faces = bottomCap ++ topCap ++ sideFaces
 
+generateTorus :: Float -> Float -> Int -> ([Point], [Face])
+generateTorus r tr def = (pts, faces)
+    where
+        -- Calculate the angles for the circumference
+        angles = [ 2 * pi * fromIntegral i / fromIntegral def | i <- [0 .. def-1] ]
+        
+        -- Generate the rings
+        pts = [ ((r + tr * cos a) * cos b, tr * sin a, (r + tr * cos a) * sin b) 
+              | a <- angles, b <- angles ]
+        
+        -- FIX: 1-based indexing, AND wrap the ring back to 0!
+        idx ring slice = 1 + (ring `mod` def) * def + (slice `mod` def)
+        
+        faces = concat [
+            [ [idx j i, idx j (i+1), idx (j+1) (i+1)],
+              [idx j i, idx (j+1) (i+1), idx (j+1) i] ]
+            | j <- [0 .. def-1], i <- [0 .. def-1] ]
+
 
 evalShape :: Env -> Shape -> Transform -> Int -> (String, Int)
 evalShape env (ShapeRef name) currentTransform vCount =
@@ -224,7 +242,16 @@ evalShape env (Cone er et ed eh) transform vCount =
         transformedPoints = map transform rawPoints
         objStr = generateMeshString transformedPoints faces vCount
     in (objStr, vCount + length rawPoints)
-    
+
+evalShape env (Torus er et ed) transform vCount =
+    let r = evalExpr env er
+        tr = evalExpr env et
+        def = round (evalExpr env ed)
+        
+        (rawPoints, faces) = generateTorus r tr def
+        transformedPoints = map transform rawPoints
+        objStr = generateMeshString transformedPoints faces vCount
+    in (objStr, vCount + length rawPoints)
 
 -- For Move, we combine the current transform with a new translation
 evalShape env (Move ex ey ez innerShape) currentTransform vCount =

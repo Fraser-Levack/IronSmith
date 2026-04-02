@@ -93,6 +93,14 @@ pCone = do
     h <- pExpr; _ <- symbol ")"
     return (Cone r tr d h)
 
+pTorus :: Parser Shape
+pTorus = do
+    _ <- symbol "torus("
+    r <- pExpr; _ <- symbol ","
+    tr <- pExpr; _ <- symbol ","
+    d <- pExpr; _ <- symbol ")"
+    return (Torus r tr d)
+
 pMove :: Parser Shape
 pMove = do
     _ <- symbol "move("
@@ -154,7 +162,8 @@ pShape = try pGroup <|>
          try pCylinder <|> 
          try pSphere <|> 
          try pCube <|> 
-         try pCone <|>  
+         try pCone <|>
+         try pTorus <|> 
          pShapeRef
 -------------------------------------------------
 -- 3. STATEMENT PARSERS (The Actions)
