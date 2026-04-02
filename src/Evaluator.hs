@@ -71,6 +71,7 @@ generateMeshString vertices faces vOffset =
         
     in unlines (vStrings ++ fStrings)
 
+
 -- Returns (Vertices, Faces)
 generateCylinder :: Float -> Float -> Int -> ([Point], [Face])
 generateCylinder r h def = (pts, bottomCap ++ topCap ++ sideFaces)
@@ -99,6 +100,7 @@ generateCylinder r h def = (pts, bottomCap ++ topCap ++ sideFaces)
         [ [botIdx i, topIdx i, topIdx (i+1)], 
           [botIdx i, topIdx (i+1), botIdx (i+1)] ] 
         | i <- [0 .. def-1] ]
+
 
 generateSphere :: Float -> Int -> ([Point], [Face])
 generateSphere r def = (pts, faces)
@@ -131,6 +133,38 @@ generateSphere r def = (pts, faces)
         | j <- [0 .. res-3], i <- [0 .. res-1] ]
         
     faces = bottomCap ++ topCap ++ quads
+
+
+generateCone :: Float -> Float -> Int -> Float -> ([Point], [Face])
+generateCone r tr def h = (pts, faces)
+    where
+        hd = h / 2.0
+        -- Calculate the angles for the circumference
+        angles = [ 2 * pi * fromIntegral i / fromIntegral def | i <- [0 .. def-1] ]
+        
+        -- Generate the rings
+        bottomRing = [ (r * cos a, -hd, r * sin a) | a <- angles ]
+        topRing    = [ (tr * cos a,  hd, tr * sin a) | a <- angles ]
+        
+        -- Vertex List: Center Bottom (1), Center Top (2), Bottom Ring (3 to def+2), Top Ring
+        pts = [(0, -hd, 0), (0, hd, 0)] ++ bottomRing ++ topRing
+        
+        -- Helpers to safely wrap indices around the circle
+        botIdx i = 3 + (i `mod` def)
+        topIdx i = 3 + def + (i `mod` def)
+        
+        -- Triangle fans for the caps
+        bottomCap = [ [1, botIdx i, botIdx (i+1)] | i <- [0 .. def-1] ]
+        topCap    = [ [2, topIdx (i+1), topIdx i] | i <- [0 .. def-1] ]
+        
+        -- Quads (split into 2 triangles) for the sides
+        sideFaces = concat [ 
+            [ [botIdx i, topIdx i, topIdx (i+1)], 
+            [botIdx i, topIdx (i+1), botIdx (i+1)] ] 
+            | i <- [0 .. def-1] ]
+            
+        faces = bottomCap ++ topCap ++ sideFaces
+
 
 evalShape :: Env -> Shape -> Transform -> Int -> (String, Int)
 evalShape env (ShapeRef name) currentTransform vCount =
@@ -179,6 +213,18 @@ evalShape env (Sphere er ed) transform vCount =
         transformedPoints = map transform rawPoints
         objStr = generateMeshString transformedPoints faces vCount
     in (objStr, vCount + length rawPoints)
+
+evalShape env (Cone er et ed eh) transform vCount =
+    let r = evalExpr env er
+        tr = evalExpr env et
+        def = round (evalExpr env ed)
+        h = evalExpr env eh
+        
+        (rawPoints, faces) = generateCone r tr def h
+        transformedPoints = map transform rawPoints
+        objStr = generateMeshString transformedPoints faces vCount
+    in (objStr, vCount + length rawPoints)
+    
 
 -- For Move, we combine the current transform with a new translation
 evalShape env (Move ex ey ez innerShape) currentTransform vCount =

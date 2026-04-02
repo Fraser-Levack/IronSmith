@@ -12,6 +12,8 @@ data Expr
 data Shape 
     = Cube Expr Expr Expr
     | Cylinder Expr Expr Expr
+    | Cone Expr Expr Expr Expr  -- radius, top radius, definition, height
+    | Torus Expr Expr Expr  -- radius, tube radius, definition
     | Sphere Expr Expr
     | Move Expr Expr Expr Shape
     | RotateX Expr Shape
