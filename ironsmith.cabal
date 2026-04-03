@@ -9,7 +9,11 @@ executable ironsmith
     main-is:          Main.hs
     other-modules:    AST, 
                       Parser, 
-                      Evaluator
+                      Evaluator,
+                      AppState,
+                      AppCore,
+                      AppUI,
+                      AppEvents
                       
     hs-source-dirs:   app, src
     default-language: Haskell2010
