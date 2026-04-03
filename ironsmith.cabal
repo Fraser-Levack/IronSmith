@@ -25,4 +25,5 @@ executable ironsmith
                       brick,
                       vty,
                       mtl,
-                      microlens
+                      microlens,
+                      directory

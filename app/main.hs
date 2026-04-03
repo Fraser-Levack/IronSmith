@@ -6,67 +6,282 @@ import Brick
 import Brick.Types (zoom)
 import Brick.Widgets.Border
 import Brick.Widgets.Border.Style
+import Brick.Widgets.Center (center)
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Lens.Micro (Lens')
 import Text.Megaparsec (parse, errorBundlePretty)
+import System.Directory (doesFileExist) -- NEW: For file checking
+import Data.List (nub) -- NEW: For removing duplicates in recent files
 
 import AST
 import Parser
 import Evaluator
 
--- | 1. THE STATE
+-- | 1. APP MODES, NAMES & STATE
+data AppMode = Splash | Editing | SaveDialog | OpenDialog
+    deriving (Eq)
+
+data Name = CodeEditor | SaveEditor | OpenEditor
+    deriving (Eq, Ord, Show)
+
+data AppStatus = Normal | Saved | ErrorMsg String
+
 data AppState = AppState
-    { _editor    :: E.Editor String ()
-    , _lastError :: Maybe String
+    { _mode        :: AppMode
+    , _editor      :: E.Editor String Name
+    , _saveInput   :: E.Editor String Name 
+    , _openInput   :: E.Editor String Name -- NEW: Input for Open dialog
+    , _currentFile :: Maybe FilePath     
+    , _recentFiles :: [FilePath]           -- NEW: Cache of recent files
+    , _status      :: AppStatus
     }
 
--- | 1b. THE LENS (Allows Brick to 'zoom' into the editor's state)
-editorLens :: Lens' AppState (E.Editor String ())
+editorLens :: Lens' AppState (E.Editor String Name)
 editorLens f st = (\e -> st { _editor = e }) <$> f (_editor st)
 
--- | 2. THE UI DRAWING FUNCTION
-drawUI :: AppState -> [Widget ()]
-drawUI st = [ui]
+saveInputLens :: Lens' AppState (E.Editor String Name)
+saveInputLens f st = (\e -> st { _saveInput = e }) <$> f (_saveInput st)
+
+openInputLens :: Lens' AppState (E.Editor String Name)
+openInputLens f st = (\e -> st { _openInput = e }) <$> f (_openInput st)
+
+-- | 2. PERSISTENCE HELPERS
+-- Reads the hidden cache file
+loadRecents :: IO [FilePath]
+loadRecents = do
+    exists <- doesFileExist ".ironsmith_recents"
+    if exists
+        then lines <$> readFile ".ironsmith_recents"
+        else return []
+
+-- Adds a file to the top of the list, removes duplicates, keeps max 5, and saves it
+saveRecent :: FilePath -> [FilePath] -> IO [FilePath]
+saveRecent path oldRecents = do
+    let newRecents = take 5 $ nub (path : oldRecents)
+    writeFile ".ironsmith_recents" (unlines newRecents)
+    return newRecents
+
+
+-- | 3. UI DRAWING FUNCTIONS
+drawUI :: AppState -> [Widget Name]
+drawUI st = case _mode st of
+    Splash     -> [drawSplash st] -- Pass state to show recents
+    Editing    -> [drawEditor st]
+    SaveDialog -> [drawSaveDialog st] 
+    OpenDialog -> [drawOpenDialog st]
+
+drawSplash :: AppState -> Widget Name
+drawSplash st = center $ vBox $
+    [ withAttr (attrName "title") $ str " _____                 _____           _ _   _ "
+    , withAttr (attrName "title") $ str "|_   _|               /  ___|         (_) | | |"
+    , withAttr (attrName "title") $ str "  | | _ __ ___  _ __  \\ `--. _ __ ___  _| |_| |__ "
+    , withAttr (attrName "title") $ str "  | || '__/ _ \\| '_ \\  `--. \\ '_ ` _ \\| | __| '_ \\"
+    , withAttr (attrName "title") $ str " _| || | | (_) | | | |/\\__/ / | | | | | | |_| | | |"
+    , withAttr (attrName "title") $ str " \\___/_|  \\___/|_| |_|\\____/|_| |_| |_|_|\\__|_| |_|"
+    , str " "
+    , center $ str "The Procedural 3D Forge"
+    , str " "
+    , center $ withAttr (attrName "title") $ str "--- Recent Files ---"
+    ] ++ drawRecents (_recentFiles st) ++
+    [ str " "
+    , center $ withAttr (attrName "success") $ str "[ Press ENTER for New File | Press 'O' to Open File ]"
+    , center $ str "[ Press ESC to Quit ]"
+    ]
   where
-    editorWidget = E.renderEditor (str . unlines) True (_editor st)
-    
-    statusWidget = case _lastError st of
-        Nothing  -> withAttr (attrName "success") $ str "Status: OK - output.glsl forged successfully!"
-        Just err -> withAttr (attrName "error")   $ str err
+    -- Dynamically generate the list of recent files
+    drawRecents [] = [ center $ str "(No recent files)" ]
+    drawRecents fs = [ center $ str ("[" ++ show i ++ "] " ++ f) | (i, f) <- zip [(1::Int)..] fs ]
+
+drawEditor :: AppState -> Widget Name
+drawEditor st = ui
+  where
+    codeWidget = E.renderEditor (str . unlines) True (_editor st)
+    fileLabel = case _currentFile st of
+        Nothing -> " *UNSAVED* "
+        Just f  -> " " ++ f ++ " "
+
+    statusWidget = case _status st of
+        Normal      -> withAttr (attrName "success") $ str "Status: OK"
+        Saved       -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
+        ErrorMsg e  -> withAttr (attrName "error")   $ str e
 
     ui = withBorderStyle unicode
-         $ borderWithLabel (str " IronSmith Forge ")
+         $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
          $ vBox
-             [ vLimitPercent 75 $ padAll 1 editorWidget
+             [ vLimitPercent 80 $ padAll 1 codeWidget
              , hBorder
              , padAll 1 statusWidget
              ]
 
--- | 3. THE EVENT HANDLER
-handleEvent :: BrickEvent () e -> EventM () AppState ()
-handleEvent (VtyEvent (V.EvKey V.KEsc [])) = halt -- Press ESC to exit
+drawSaveDialog :: AppState -> Widget Name
+drawSaveDialog st = center $ borderWithLabel (str " Save As (.irsm) ") $ padAll 2 $ vBox
+    [ str "Enter file name (e.g., my_model.irsm):"
+    , str " "
+    , vLimit 1 $ E.renderEditor (str . unlines) True (_saveInput st)
+    , str " "
+    , withAttr (attrName "success") $ str "[ Press ENTER to confirm ]"
+    , withAttr (attrName "error")   $ str "[ Press ESC to cancel ]"
+    ]
+
+drawOpenDialog :: AppState -> Widget Name
+drawOpenDialog st = center $ borderWithLabel (str " Open File ") $ padAll 2 $ vBox
+    [ str "Enter path to .irsm file:"
+    , str " "
+    , vLimit 1 $ E.renderEditor (str . unlines) True (_openInput st)
+    , str " "
+    , case _status st of
+        ErrorMsg e -> withAttr (attrName "error") $ str e
+        _          -> str " "
+    , withAttr (attrName "success") $ str "[ Press ENTER to open ]"
+    , withAttr (attrName "error")   $ str "[ Press ESC to cancel ]"
+    ]
+
+-- | 4. EVENT ROUTER
+handleEvent :: BrickEvent Name e -> EventM Name AppState ()
 handleEvent ev = do
-    -- 1. Zoom into the editor and pass it the entire BrickEvent
+    st <- get
+    case _mode st of
+        Splash     -> handleSplash ev
+        Editing    -> handleEditing ev
+        SaveDialog -> handleSaveDialog ev
+        OpenDialog -> handleOpenDialog ev
+
+-- | 4a. Splash Screen Events
+handleSplash :: BrickEvent Name e -> EventM Name AppState ()
+handleSplash (VtyEvent (V.EvKey V.KEsc []))   = halt
+handleSplash (VtyEvent (V.EvKey V.KEnter [])) = do
+    st <- get
+    -- Create a brand new empty editor
+    put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal })
+handleSplash (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
+    st <- get
+    put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+handleSplash (VtyEvent (V.EvKey (V.KChar c) [])) 
+    | c `elem` ['1'..'5'] = do
+        -- Number key pressed: Load from recent files!
+        st <- get
+        let idx = read [c] - 1
+            recents = _recentFiles st
+        if idx < length recents
+            then do
+                let path = recents !! idx
+                exists <- liftIO $ doesFileExist path
+                if exists
+                    then do
+                        content <- liftIO $ readFile path
+                        _ <- liftIO $ compileAndSave content
+                        newRecents <- liftIO $ saveRecent path recents
+                        put (st { _mode = Editing
+                                , _currentFile = Just path
+                                , _editor = E.editor CodeEditor Nothing content
+                                , _recentFiles = newRecents 
+                                })
+                    else return () -- File missing, ignore
+            else return ()
+handleSplash _ = return ()
+
+-- | 4b. Editing Events
+handleEditing :: BrickEvent Name e -> EventM Name AppState ()
+handleEditing (VtyEvent (V.EvKey V.KEsc [])) = halt
+handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
+    -- CTRL+O to open file while editing
+    st <- get
+    put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
+    st <- get
+    case _currentFile st of
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+            liftIO $ writeFile path code
+            newErr <- liftIO $ compileAndSave code 
+            newRecents <- liftIO $ saveRecent path (_recentFiles st) -- Update cache!
+            let newStatus = case newErr of
+                    Nothing -> Saved
+                    Just e  -> ErrorMsg e
+            put (st { _status = newStatus, _recentFiles = newRecents })
+        Nothing -> 
+            put (st { _mode = SaveDialog })
+
+handleEditing ev = do
     zoom editorLens $ E.handleEditorEvent ev
-    
-    -- 2. Grab the freshly updated state
     st <- get 
+    let codeString = unlines $ E.getEditContents (_editor st)
+    newErr <- liftIO $ compileAndSave codeString
+    let newStatus = case newErr of
+            Nothing -> Normal
+            Just e  -> ErrorMsg e
+    put (st { _status = newStatus })
+
+-- | 4c. Save Dialog Events
+handleSaveDialog :: BrickEvent Name e -> EventM Name AppState ()
+handleSaveDialog (VtyEvent (V.EvKey V.KEsc [])) = do
+    st <- get
+    put (st { _mode = Editing })
+
+handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
+    st <- get
+    let filenameLines = E.getEditContents (_saveInput st)
+        filename = if null filenameLines || null (head filenameLines) 
+                   then "untitled.irsm" 
+                   else head filenameLines
+        code = unlines $ E.getEditContents (_editor st)
     
-    -- 3. Extract text from the editor
-    let codeLines  = E.getEditContents (_editor st)
-        codeString = unlines codeLines
-
-    -- 4. Run our compiler bridge
-    newErrorState <- liftIO $ compileAndSave codeString
+    liftIO $ writeFile filename code
+    newErr <- liftIO $ compileAndSave code
+    newRecents <- liftIO $ saveRecent filename (_recentFiles st) -- Update cache!
     
-    -- 5. Save the error state back
-    put (st { _lastError = newErrorState })
+    let newStatus = case newErr of
+            Nothing -> Saved
+            Just e  -> ErrorMsg e
+    
+    put (st { _mode = Editing
+            , _currentFile = Just filename
+            , _saveInput = E.editor SaveEditor (Just 1) ""
+            , _status = newStatus
+            , _recentFiles = newRecents
+            })
 
+handleSaveDialog ev = do
+    zoom saveInputLens $ E.handleEditorEvent ev
 
--- | 4. THE COMPILER BRIDGE
+-- | 4d. Open Dialog Events
+handleOpenDialog :: BrickEvent Name e -> EventM Name AppState ()
+handleOpenDialog (VtyEvent (V.EvKey V.KEsc [])) = do
+    st <- get
+    -- Cancel opening, go back to splash or editor based on if we have a file
+    let nextMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""] 
+                   then Splash else Editing
+    put (st { _mode = nextMode, _status = Normal })
+
+handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
+    st <- get
+    let pathLines = E.getEditContents (_openInput st)
+        path = if null pathLines || null (head pathLines) then "" else head pathLines
+    
+    exists <- liftIO $ doesFileExist path
+    if exists
+        then do
+            -- File found! Load it into a new editor.
+            content <- liftIO $ readFile path
+            _ <- liftIO $ compileAndSave content
+            newRecents <- liftIO $ saveRecent path (_recentFiles st)
+            put (st { _mode = Editing
+                    , _currentFile = Just path
+                    , _editor = E.editor CodeEditor Nothing content
+                    , _status = Normal
+                    , _recentFiles = newRecents
+                    })
+        else do
+            -- Show error message in the dialog
+            put (st { _status = ErrorMsg "File not found!" })
+
+handleOpenDialog ev = do
+    zoom openInputLens $ E.handleEditorEvent ev
+
+-- | 5. COMPILER BRIDGE
 compileAndSave :: String -> IO (Maybe String)
 compileAndSave code =
     case parse pScript "editor" code of
@@ -76,8 +291,8 @@ compileAndSave code =
             writeFile "output.glsl" glslData
             return Nothing
 
--- | 5. THE APP DEFINITION
-app :: App AppState e ()
+-- | 6. BOOTSTRAP
+app :: App AppState e Name
 app = App
     { appDraw         = drawUI
     , appChooseCursor = showFirstCursor 
@@ -86,17 +301,24 @@ app = App
     , appAttrMap      = const $ attrMap V.defAttr
         [ (attrName "error",   fg V.red)
         , (attrName "success", fg V.green)
+        , (attrName "saved",   fg V.yellow `V.withStyle` V.bold)
+        , (attrName "title",   fg V.cyan)
         ]
     }
 
 main :: IO ()
 main = do
-    initialCode <- readFile "test.irsm"
+    -- Load the recent files from disk on boot
+    recents <- loadRecents
     
     let initialState = AppState
-            -- FIX: Pass 'Nothing' for unlimited lines, and 'initialCode' as a single string
-            { _editor    = E.editor () Nothing initialCode 
-            , _lastError = Nothing
+            { _mode        = Splash
+            , _editor      = E.editor CodeEditor Nothing "" 
+            , _saveInput   = E.editor SaveEditor (Just 1) "" 
+            , _openInput   = E.editor OpenEditor (Just 1) ""
+            , _currentFile = Nothing
+            , _recentFiles = recents
+            , _status      = Normal
             }
             
     _ <- defaultMain app initialState
