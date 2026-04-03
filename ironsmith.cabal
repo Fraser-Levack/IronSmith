@@ -26,4 +26,5 @@ executable ironsmith
                       vty,
                       mtl,
                       microlens,
-                      directory
+                      directory,
+                      filepath

@@ -13,8 +13,9 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Lens.Micro (Lens')
 import Text.Megaparsec (parse, errorBundlePretty)
-import System.Directory (doesFileExist) -- NEW: For file checking
-import Data.List (nub) -- NEW: For removing duplicates in recent files
+import System.Directory (doesFileExist)
+import System.FilePath (takeFileName) -- NEW: For stripping out the folder paths
+import Data.List (nub)
 
 import AST
 import Parser
@@ -33,9 +34,9 @@ data AppState = AppState
     { _mode        :: AppMode
     , _editor      :: E.Editor String Name
     , _saveInput   :: E.Editor String Name 
-    , _openInput   :: E.Editor String Name -- NEW: Input for Open dialog
+    , _openInput   :: E.Editor String Name 
     , _currentFile :: Maybe FilePath     
-    , _recentFiles :: [FilePath]           -- NEW: Cache of recent files
+    , _recentFiles :: [FilePath]           
     , _status      :: AppStatus
     }
 
@@ -49,7 +50,6 @@ openInputLens :: Lens' AppState (E.Editor String Name)
 openInputLens f st = (\e -> st { _openInput = e }) <$> f (_openInput st)
 
 -- | 2. PERSISTENCE HELPERS
--- Reads the hidden cache file
 loadRecents :: IO [FilePath]
 loadRecents = do
     exists <- doesFileExist ".ironsmith_recents"
@@ -57,7 +57,6 @@ loadRecents = do
         then lines <$> readFile ".ironsmith_recents"
         else return []
 
--- Adds a file to the top of the list, removes duplicates, keeps max 5, and saves it
 saveRecent :: FilePath -> [FilePath] -> IO [FilePath]
 saveRecent path oldRecents = do
     let newRecents = take 5 $ nub (path : oldRecents)
@@ -68,7 +67,7 @@ saveRecent path oldRecents = do
 -- | 3. UI DRAWING FUNCTIONS
 drawUI :: AppState -> [Widget Name]
 drawUI st = case _mode st of
-    Splash     -> [drawSplash st] -- Pass state to show recents
+    Splash     -> [drawSplash st]
     Editing    -> [drawEditor st]
     SaveDialog -> [drawSaveDialog st] 
     OpenDialog -> [drawOpenDialog st]
@@ -91,27 +90,31 @@ drawSplash st = center $ vBox $
     , center $ str "[ Press ESC to Quit ]"
     ]
   where
-    -- Dynamically generate the list of recent files
     drawRecents [] = [ center $ str "(No recent files)" ]
-    drawRecents fs = [ center $ str ("[" ++ show i ++ "] " ++ f) | (i, f) <- zip [(1::Int)..] fs ]
+    -- FIX: Apply takeFileName to cleanly display just the filename
+    drawRecents fs = [ center $ str ("[" ++ show i ++ "] " ++ takeFileName f) | (i, f) <- zip [(1::Int)..] fs ]
 
 drawEditor :: AppState -> Widget Name
 drawEditor st = ui
   where
-    codeWidget = E.renderEditor (str . unlines) True (_editor st)
+    -- FIX 1: Use (vBox . map str) instead of (str . unlines) to properly render multi-line text!
+    codeWidget = E.renderEditor (vBox . map str) True (_editor st)
+    
     fileLabel = case _currentFile st of
         Nothing -> " *UNSAVED* "
-        Just f  -> " " ++ f ++ " "
+        Just f  -> " " ++ takeFileName f ++ " "
 
     statusWidget = case _status st of
         Normal      -> withAttr (attrName "success") $ str "Status: OK"
         Saved       -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
-        ErrorMsg e  -> withAttr (attrName "error")   $ str e
+        -- FIX 2: Break the Megaparsec error into multiple lines, and limit it to 5 lines tall max
+        ErrorMsg e  -> withAttr (attrName "error")   $ vLimit 5 $ vBox (map str (lines e))
 
     ui = withBorderStyle unicode
          $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
          $ vBox
-             [ vLimitPercent 80 $ padAll 1 codeWidget
+             -- FIX 3: Remove vLimitPercent! Let Brick calculate the remaining space naturally.
+             [ padAll 1 codeWidget
              , hBorder
              , padAll 1 statusWidget
              ]
@@ -154,14 +157,12 @@ handleSplash :: BrickEvent Name e -> EventM Name AppState ()
 handleSplash (VtyEvent (V.EvKey V.KEsc []))   = halt
 handleSplash (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
-    -- Create a brand new empty editor
     put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal })
 handleSplash (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
 handleSplash (VtyEvent (V.EvKey (V.KChar c) [])) 
     | c `elem` ['1'..'5'] = do
-        -- Number key pressed: Load from recent files!
         st <- get
         let idx = read [c] - 1
             recents = _recentFiles st
@@ -179,7 +180,7 @@ handleSplash (VtyEvent (V.EvKey (V.KChar c) []))
                                 , _editor = E.editor CodeEditor Nothing content
                                 , _recentFiles = newRecents 
                                 })
-                    else return () -- File missing, ignore
+                    else return () 
             else return ()
 handleSplash _ = return ()
 
@@ -187,7 +188,6 @@ handleSplash _ = return ()
 handleEditing :: BrickEvent Name e -> EventM Name AppState ()
 handleEditing (VtyEvent (V.EvKey V.KEsc [])) = halt
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
-    -- CTRL+O to open file while editing
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
 handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
@@ -197,7 +197,7 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
             newErr <- liftIO $ compileAndSave code 
-            newRecents <- liftIO $ saveRecent path (_recentFiles st) -- Update cache!
+            newRecents <- liftIO $ saveRecent path (_recentFiles st) 
             let newStatus = case newErr of
                     Nothing -> Saved
                     Just e  -> ErrorMsg e
@@ -231,7 +231,7 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
     
     liftIO $ writeFile filename code
     newErr <- liftIO $ compileAndSave code
-    newRecents <- liftIO $ saveRecent filename (_recentFiles st) -- Update cache!
+    newRecents <- liftIO $ saveRecent filename (_recentFiles st) 
     
     let newStatus = case newErr of
             Nothing -> Saved
@@ -251,7 +251,6 @@ handleSaveDialog ev = do
 handleOpenDialog :: BrickEvent Name e -> EventM Name AppState ()
 handleOpenDialog (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
-    -- Cancel opening, go back to splash or editor based on if we have a file
     let nextMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""] 
                    then Splash else Editing
     put (st { _mode = nextMode, _status = Normal })
@@ -264,7 +263,6 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
     exists <- liftIO $ doesFileExist path
     if exists
         then do
-            -- File found! Load it into a new editor.
             content <- liftIO $ readFile path
             _ <- liftIO $ compileAndSave content
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
@@ -275,7 +273,6 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
                     , _recentFiles = newRecents
                     })
         else do
-            -- Show error message in the dialog
             put (st { _status = ErrorMsg "File not found!" })
 
 handleOpenDialog ev = do
@@ -308,7 +305,6 @@ app = App
 
 main :: IO ()
 main = do
-    -- Load the recent files from disk on boot
     recents <- loadRecents
     
     let initialState = AppState
