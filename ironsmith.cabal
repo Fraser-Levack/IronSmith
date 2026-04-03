@@ -6,19 +6,23 @@ author:             The IronSmith Forge
 maintainer:         user@example.com
 
 executable ironsmith
-    
     main-is:          Main.hs
-    
     other-modules:    AST, 
                       Parser, 
                       Evaluator
                       
     hs-source-dirs:   app, src
-    
     default-language: Haskell2010
+    
+    -- Tell GHC to use the multi-threaded runtime
+    ghc-options:      -threaded
     
     build-depends:    base >= 4.14 && < 5,
                       megaparsec,
                       text,
                       containers,
-                      parser-combinators
+                      parser-combinators,
+                      brick,
+                      vty,
+                      mtl,
+                      microlens
