@@ -12,5 +12,5 @@ float sdCappedCone(vec3 p, float h, float r1, float r2) {
 }
 
 float map(vec3 p) {
-    return sdSphere((p - vec3(0.0, 0.0, 0.0)), 5.0);
+    return sdBox(p, vec3(4.5, 0.0, 0.0));
 }
