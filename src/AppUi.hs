@@ -18,39 +18,52 @@ drawUI st = case _mode st of
     OpenDialog -> [drawOpenDialog st]
 
 drawSplash :: AppState -> Widget Name
-drawSplash st = center $ vBox $
-    [ hCenter titleWidget -- NEW: We abstracted the logo out to its own widget
-    , str " "
-    , hCenter $ withAttr (attrName "title") $ str "--- Recent Files ---"
-    ] ++ drawRecents (_recentFiles st) ++
-    [ str " "
-    , hCenter $ withAttr (attrName "success") $ str "[ Press ENTER for New File | Press 'O' to Open File ]"
-    , str " "
-    , hCenter $ str "[ Press ESC to Quit ]"
-    ]
+drawSplash st = 
+    center $ 
+    withBorderStyle unicode $
+    borderWithLabel (str " Your 3D Forge ") $
+    vBox 
+        [ padAll 1 titleWidget
+        , hBorder
+        , padAll 1 recentsWidget
+        , hBorder
+        , padAll 1 commandsWidget
+        ]
   where
-    drawRecents [] = [ center $ str "(No recent files)" ]
-    drawRecents fs = [ center $ str ("[" ++ show i ++ "] " ++ takeFileName f) | (i, f) <- zip [(1::Int)..] fs ]
+    recentsWidget = vBox $
+        [ withAttr (attrName "title") $ str "--- Recent Files ---"
+        , str " "
+        ] ++ drawRecents (_recentFiles st)
+        
+    drawRecents [] = [ str "(No recent files)" ]
+    drawRecents fs = [ str ("[" ++ show i ++ "] " ++ takeFileName f) | (i, f) <- zip [(1::Int)..] fs ]
+
+    commandsWidget = vBox
+        [ withAttr (attrName "success") $ str "[ Press ENTER for New File | Press 'O' to Open File ]"
+        , str " "
+        , str "[ Press ESC to Quit ]"
+        ]
 
 -- | THE NEW SPLASH LOGO WIDGET
--- We use hBox to put the Castle vBox and the Title vBox side-by-side.
+-- We stack the castle vertically over the new IronSmith block text
 titleWidget :: Widget Name
-titleWidget = hBox 
-    [ center $ withAttr (attrName "title") $ vBox
-        [ str "▄▄ ▄▄ ▄▄        ▄▄ ▄▄ ▄▄   "
-        , str "████████        ████████   "
-        , str "███▀▀███▄▄████▄▄███▀▀███   "
-        , str "███  ████▀▀  ▀▀████  ███   "
-        , str "█████████      █████████   "
-        , str "█████████      █████████   " 
+titleWidget = hBox
+    [ withAttr (attrName "title") $ vBox
+        [ str "▄▄ ▄▄ ▄▄        ▄▄ ▄▄ ▄▄ "
+        , str "████████        ████████ "
+        , str "███▀▀███▄▄████▄▄███▀▀███ "
+        , str "███  ████▀▀  ▀▀████  ███ "
+        , str "█████████      █████████ "
+        , str "█████████      █████████ " 
         ]
-    , center $ withAttr (attrName "title") $ vBox
-        [ str " _____                 _____           _ _   _ "
-        , str "|_   _|               /  ___|         (_) | | |"
-        , str "  | | _ __ ___  _ __  \\ `--. _ __ ___  _| |_| |__ "
-        , str "  | || '__/ _ \\| '_ \\  `--. \\ '_ ` _ \\| | __| '_ \\"
-        , str " _| || | | (_) | | | |/\\__/ / | | | | | | |_| | | |"
-        , str " \\___/_|  \\___/|_| |_|\\____/|_| |_| |_|_|\\__|_| |_|"
+    , str "       "
+    , withAttr (attrName "title") $ vBox
+        [ str "██╗██████╗  ██████╗ ███╗   ██╗███████╗███╗   ███╗██╗████████╗██╗  ██╗"
+        , str "██║██╔══██╗██╔═══██╗████╗  ██║██╔════╝████╗ ████║██║╚══██╔══╝██║  ██║"
+        , str "██║██████╔╝██║   ██║██╔██╗ ██║███████╗██╔████╔██║██║   ██║   ███████║"
+        , str "██║██╔══██╗██║   ██║██║╚██╗██║╚════██║██║╚██╔╝██║██║   ██║   ██╔══██║"
+        , str "██║██║  ██║╚██████╔╝██║ ╚████║███████║██║ ╚═╝ ██║██║   ██║   ██║  ██║"
+        , str "╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝"
         ]
     ]
 
