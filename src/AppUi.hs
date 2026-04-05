@@ -70,13 +70,16 @@ titleWidget = hBox
 drawEditor :: AppState -> Widget Name
 drawEditor st = ui
   where
-    codeWidget = E.renderEditor (vBox . map str) True (_editor st)
+    -- FIX: If a line is completely empty, render a space so it keeps a height of 1
+    drawLine "" = str " "
+    drawLine s  = str s
     
-    -- NEW: Add an asterisk (*) if the file has unsaved changes
-    dirtyMarker = if _isDirty st then "*" else ""
+    -- Apply our custom drawLine function instead of just 'str'
+    codeWidget = E.renderEditor (vBox . map drawLine) True (_editor st)
+    
     fileLabel = case _currentFile st of
-        Nothing -> " *UNSAVED*" ++ dirtyMarker ++ " "
-        Just f  -> " " ++ takeFileName f ++ dirtyMarker ++ " "
+        Nothing -> " *UNSAVED* "
+        Just f  -> " " ++ takeFileName f ++ " "
 
     statusWidget = case _status st of
         Normal      -> withAttr (attrName "success") $ str "Status: OK"
