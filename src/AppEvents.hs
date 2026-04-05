@@ -12,19 +12,21 @@ import AppState
 import AppCore
 
 handleEvent :: BrickEvent Name e -> EventM Name AppState ()
+handleEvent (VtyEvent (V.EvKey (V.KChar 'q') [V.MCtrl])) = halt -- Global Killswitch
 handleEvent ev = do
     st <- get
     case _mode st of
-        Splash     -> handleSplash ev
-        Editing    -> handleEditing ev
-        SaveDialog -> handleSaveDialog ev
-        OpenDialog -> handleOpenDialog ev
+        Splash        -> handleSplash ev
+        Editing       -> handleEditing ev
+        SaveDialog    -> handleSaveDialog ev
+        OpenDialog    -> handleOpenDialog ev
+        UnsavedPrompt -> handleUnsavedPrompt ev -- NEW
 
 handleSplash :: BrickEvent Name e -> EventM Name AppState ()
 handleSplash (VtyEvent (V.EvKey V.KEsc []))   = halt
 handleSplash (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
-    put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal })
+    put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal, _isDirty = False })
 handleSplash (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
@@ -46,13 +48,20 @@ handleSplash (VtyEvent (V.EvKey (V.KChar c) []))
                                 , _currentFile = Just path
                                 , _editor = E.editor CodeEditor Nothing content
                                 , _recentFiles = newRecents 
+                                , _isDirty = False
                                 })
                     else return () 
             else return ()
 handleSplash _ = return ()
 
 handleEditing :: BrickEvent Name e -> EventM Name AppState ()
-handleEditing (VtyEvent (V.EvKey V.KEsc [])) = halt
+handleEditing (VtyEvent (V.EvKey V.KEsc [])) = do
+    -- NEW: Intercept Escape key
+    st <- get
+    if _isDirty st 
+        then put (st { _mode = UnsavedPrompt }) -- Prompt if unsaved
+        else put (st { _mode = Splash })        -- Go straight to splash if clean
+
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
@@ -67,20 +76,62 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
             let newStatus = case newErr of
                     Nothing -> Saved
                     Just e  -> ErrorMsg e
-            put (st { _status = newStatus, _recentFiles = newRecents })
+            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False }) -- Clean!
         Nothing -> 
             put (st { _mode = SaveDialog })
 
 handleEditing ev = do
-    zoom editorLens $ E.handleEditorEvent ev
+    -- NEW: Compare text before and after the event to see if they typed
     st <- get 
-    let codeString = unlines $ E.getEditContents (_editor st)
-    newErr <- liftIO $ compileAndSave codeString
-    let newStatus = case newErr of
-            Nothing -> Normal
-            Just e  -> ErrorMsg e
-    put (st { _status = newStatus })
+    let oldText = E.getEditContents (_editor st)
+    
+    zoom editorLens $ E.handleEditorEvent ev
+    
+    st' <- get 
+    let newText = E.getEditContents (_editor st')
+    
+    if oldText /= newText
+        then do
+            -- Text changed! Compile and mark as dirty.
+            newErr <- liftIO $ compileAndSave (unlines newText)
+            let newStatus = case newErr of
+                    Nothing -> Normal
+                    Just e  -> ErrorMsg e
+            put (st' { _status = newStatus, _isDirty = True })
+        else 
+            -- Text didn't change (e.g. they just pressed arrow keys)
+            put st'
 
+
+-- NEW EVENT ROUTER
+handleUnsavedPrompt :: BrickEvent Name e -> EventM Name AppState ()
+handleUnsavedPrompt (VtyEvent (V.EvKey V.KEsc [])) = do
+    -- Cancel exit, go back to code
+    st <- get
+    put (st { _mode = Editing })
+
+handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
+    -- Discard and Exit
+    st <- get
+    put (st { _mode = Splash, _isDirty = False })
+handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'N') [])) = handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') []))
+
+handleUnsavedPrompt (VtyEvent (V.EvKey V.KEnter [])) = do
+    -- Save and Exit
+    st <- get
+    case _currentFile st of
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+            liftIO $ writeFile path code
+            _ <- liftIO $ compileAndSave code
+            newRecents <- liftIO $ saveRecent path (_recentFiles st)
+            put (st { _mode = Splash, _isDirty = False, _recentFiles = newRecents })
+        Nothing ->
+            -- If it's a new file, we have to ask for a name first
+            put (st { _mode = SaveDialog })
+handleUnsavedPrompt _ = return ()
+
+-- (Keep handleSaveDialog and handleOpenDialog exactly as they were...)
 handleSaveDialog :: BrickEvent Name e -> EventM Name AppState ()
 handleSaveDialog (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
@@ -107,6 +158,7 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
             , _saveInput = E.editor SaveEditor (Just 1) ""
             , _status = newStatus
             , _recentFiles = newRecents
+            , _isDirty = False -- Clean!
             })
 
 handleSaveDialog ev = do
@@ -135,6 +187,7 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
                     , _editor = E.editor CodeEditor Nothing content
                     , _status = Normal
                     , _recentFiles = newRecents
+                    , _isDirty = False -- Clean!
                     })
         else do
             put (st { _status = ErrorMsg "File not found!" })

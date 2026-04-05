@@ -1,0 +1,5 @@
+rim = difference(cylinder(10, 10, 10), cylinder(10, 10, 10))
+bottom_section = difference(difference(sphere(10, 10), move(0, 10, 0, cube(20, 20, 20))), move(0, -25, 0, cube(10, 10, 10)))
+move(0, 20, 0, rim)
+
+move(0, -5, 0, bottom_section)

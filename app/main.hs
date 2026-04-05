@@ -36,6 +36,7 @@ main = do
             , _currentFile = Nothing
             , _recentFiles = recents
             , _status      = Normal
+            , _isDirty     = False
             }
             
     _ <- defaultMain app initialState

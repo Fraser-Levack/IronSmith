@@ -12,11 +12,13 @@ import AppState
 
 drawUI :: AppState -> [Widget Name]
 drawUI st = case _mode st of
-    Splash     -> [drawSplash st]
-    Editing    -> [drawEditor st]
-    SaveDialog -> [drawSaveDialog st] 
-    OpenDialog -> [drawOpenDialog st]
+    Splash        -> [drawSplash st]
+    Editing       -> [drawEditor st]
+    SaveDialog    -> [drawSaveDialog st] 
+    OpenDialog    -> [drawOpenDialog st]
+    UnsavedPrompt -> [drawUnsavedPrompt st] -- NEW
 
+-- (Keep drawSplash and titleWidget exactly the same as your code)
 drawSplash :: AppState -> Widget Name
 drawSplash st = 
     center $ 
@@ -44,8 +46,6 @@ drawSplash st =
         , str "[ Press ESC to Quit ]"
         ]
 
--- | THE NEW SPLASH LOGO WIDGET
--- We stack the castle vertically over the new IronSmith block text
 titleWidget :: Widget Name
 titleWidget = hBox
     [ withAttr (attrName "title") $ vBox
@@ -72,9 +72,11 @@ drawEditor st = ui
   where
     codeWidget = E.renderEditor (vBox . map str) True (_editor st)
     
+    -- NEW: Add an asterisk (*) if the file has unsaved changes
+    dirtyMarker = if _isDirty st then "*" else ""
     fileLabel = case _currentFile st of
-        Nothing -> " *UNSAVED* "
-        Just f  -> " " ++ takeFileName f ++ " "
+        Nothing -> " *UNSAVED*" ++ dirtyMarker ++ " "
+        Just f  -> " " ++ takeFileName f ++ dirtyMarker ++ " "
 
     statusWidget = case _status st of
         Normal      -> withAttr (attrName "success") $ str "Status: OK"
@@ -89,6 +91,18 @@ drawEditor st = ui
              , padAll 1 statusWidget
              ]
 
+-- NEW UI COMPONENT
+drawUnsavedPrompt :: AppState -> Widget Name
+drawUnsavedPrompt st = center $ borderWithLabel (str " Unsaved Changes ") $ padAll 2 $ vBox
+    [ str "You have unsaved changes in your forge!"
+    , str "Would you like to save before returning to the menu?"
+    , str " "
+    , withAttr (attrName "success") $ str "[ Press ENTER to Save & Exit ]"
+    , withAttr (attrName "error")   $ str "[ Press 'N' to Discard Changes ]"
+    , str "[ Press ESC to Cancel ]"
+    ]
+
+-- (Keep drawSaveDialog and drawOpenDialog the same)
 drawSaveDialog :: AppState -> Widget Name
 drawSaveDialog st = center $ borderWithLabel (str " Save As (.irsm) ") $ padAll 2 $ vBox
     [ str "Enter file name (e.g., my_model.irsm):"
