@@ -12,6 +12,25 @@ import AST
 import Parser
 import Evaluator
 
+import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, StdStream(CreatePipe), terminateProcess)
+
+launchViewer :: IO ProcessHandle
+launchViewer = do
+    -- Using 'proc' and 'createProcess' lets us capture stdout and stderr
+    -- 'CreatePipe' swallows the output so it doesn't corrupt the Brick TUI
+    let processConfig = (proc "IronSmith-Viewer.exe" []) 
+            { std_out = CreatePipe
+            , std_err = CreatePipe 
+            }
+    
+    -- We ignore the stdin/stdout/stderr handles returned, we just want the ProcessHandle
+    (_, _, _, handle) <- createProcess processConfig
+    return handle
+
+stopViewer :: Maybe ProcessHandle -> IO ()
+stopViewer Nothing = return ()
+stopViewer (Just h) = terminateProcess h
+
 -- | PERSISTENCE HELPERS
 
 -- 1. Grab the global OS folder and make sure it exists

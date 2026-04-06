@@ -68,21 +68,21 @@ evalShape env (RotateX edeg innerShape) pVar =
         c = show (cos (-rad)) -- Reverse rotation for space folding!
         s = show (sin (-rad))
         -- GLSL mat3 takes columns: (c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z)
-        newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, -" ++ s ++ ", " ++ c ++ ") * " ++ pVar ++ ")"
+        newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, - (" ++ s ++ "), " ++ c ++ ") * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 evalShape env (RotateY edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad))
         s = show (sin (-rad))
-        newP = "(mat3(" ++ c ++ ", 0.0, -" ++ s ++ ", 0.0, 1.0, 0.0, " ++ s ++ ", 0.0, " ++ c ++ ") * " ++ pVar ++ ")"
+        newP = "(mat3(" ++ c ++ ", 0.0, - (" ++ s ++ "), 0.0, 1.0, 0.0, " ++ s ++ ", 0.0, " ++ c ++ ") * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 evalShape env (RotateZ edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad))
         s = show (sin (-rad))
-        newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -" ++ s ++ ", " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
+        newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, - (" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 
@@ -124,14 +124,11 @@ runScript env (stmt:rest) = case stmt of
 compileToGLSL :: Script -> String
 compileToGLSL script = 
     let draws = runScript Map.empty script
-        -- If there are multiple `draw()` calls, union them all together!
         sceneMap = if null draws then "999999.0" else foldl1 (\a b -> "min(" ++ a ++ ", " ++ b ++ ")") draws
-    in glslBoilerplate ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
+    in glslPrimitives ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
 
--- Standard IQ SDF Library Boilerplate
-glslBoilerplate :: String
-glslBoilerplate = unlines [
-    "// --- IronSmith SDF Library ---",
+glslPrimitives :: String
+glslPrimitives = unlines [
     "float sdSphere(vec3 p, float s) { return length(p)-s; }",
     "float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }",
     "float sdCylinder(vec3 p, float h, float r) { vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h); return min(max(d.x,d.y),0.0) + length(max(d,0.0)); }",

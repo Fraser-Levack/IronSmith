@@ -4,6 +4,7 @@ import Brick
 import Brick.Types (zoom)
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import System.Directory (doesFileExist)
@@ -37,23 +38,19 @@ handleSplash (VtyEvent (V.EvKey (V.KChar c) []))
         st <- get
         let idx = read [c] - 1
             recents = _recentFiles st
-        if idx < length recents
-            then do
-                let path = recents !! idx
-                exists <- liftIO $ doesFileExist path
-                if exists
-                    then do
-                        content <- liftIO $ readFile path
-                        _ <- liftIO $ compileAndSave content
-                        newRecents <- liftIO $ saveRecent path recents
-                        put (st { _mode = Editing
-                                , _currentFile = Just path
-                                , _editor = E.editor CodeEditor Nothing content
-                                , _recentFiles = newRecents 
-                                , _isDirty = False
-                                })
-                    else return () 
-            else return ()
+        when (idx < length recents) $ do
+            let path = recents !! idx
+            exists <- liftIO $ doesFileExist path
+            when exists $ do
+                content <- liftIO $ readFile path
+                _ <- liftIO $ compileAndSave content
+                newRecents <- liftIO $ saveRecent path recents
+                put (st { _mode = Editing
+                        , _currentFile = Just path
+                        , _editor = E.editor CodeEditor Nothing content
+                        , _recentFiles = newRecents 
+                        , _isDirty = False
+                        })
 handleSplash _ = return ()
 
 -- | 2. EDITING SCREEN

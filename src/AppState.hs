@@ -2,6 +2,7 @@ module AppState where
 
 import qualified Brick.Widgets.Edit as E
 import Lens.Micro (Lens')
+import System.Process (ProcessHandle)
 
 data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt
     deriving (Eq)
@@ -20,7 +21,8 @@ data AppState = AppState
     , _currentFile :: Maybe FilePath     
     , _recentFiles :: [FilePath]           
     , _status      :: AppStatus
-    , _isDirty     :: Bool 
+    , _isDirty     :: Bool
+    , _viewerHandle :: Maybe ProcessHandle 
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)

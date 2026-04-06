@@ -31,4 +31,5 @@ executable ironsmith
                       mtl,
                       microlens,
                       directory,
-                      filepath
+                      filepath,
+                      process

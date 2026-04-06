@@ -1,1 +1,5 @@
-cube(2,2,2)
+ball = move(0,1,0,sphere(2,2))
+
+brick = cube(10, 2, 3)
+
+difference(brick, ball)

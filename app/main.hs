@@ -1,4 +1,3 @@
--- app/main.hs
 module Main where
 
 import Brick
@@ -17,12 +16,12 @@ app = App
     , appHandleEvent  = handleEvent
     , appStartEvent   = return ()
     , appAttrMap      = const $ attrMap V.defAttr
-        [ (attrName "error",   fg V.red)
+        [ (attrName "error",    fg V.red)
         , (attrName "success", fg V.green)
         , (attrName "saved",   fg V.yellow `V.withStyle` V.bold)
         , (attrName "title",   fg (V.rgbColor 255 144 47))
-        , (attrName "shape",     fg V.cyan)
-        , (attrName "csg",       fg V.magenta)
+        , (attrName "shape",      fg V.cyan)
+        , (attrName "csg",        fg V.magenta)
         , (attrName "transform", fg V.blue)
         , (attrName "number",    fg V.yellow)
         , (attrName "errorBg",   bg V.red)
@@ -33,6 +32,12 @@ main :: IO ()
 main = do
     recents <- loadRecents
     
+    -- 1. Create the initial demo file so the viewer has something to show immediately
+    _ <- compileAndSave "draw rotateY(u_time * 40, torus(4, 1, 32))"
+    
+    -- 2. Launch the viewer immediately
+    h <- launchViewer
+    
     let initialState = AppState
             { _mode        = Splash
             , _editor      = E.editor CodeEditor Nothing "" 
@@ -42,7 +47,10 @@ main = do
             , _recentFiles = recents
             , _status      = Normal
             , _isDirty     = False
+            , _viewerHandle = Just h -- Store the handle from the start
             }
             
-    _ <- defaultMain app initialState
-    putStrLn "Forge safely closed."
+    finalState <- defaultMain app initialState
+    -- 3. Cleanup
+    stopViewer (_viewerHandle finalState)
+    putStrLn "Forge cold. Viewer closed."
