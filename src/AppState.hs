@@ -3,13 +3,14 @@ module AppState where
 import qualified Brick.Widgets.Edit as E
 import Lens.Micro (Lens')
 
-data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt -- NEW MODE
+data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt
     deriving (Eq)
 
 data Name = CodeEditor | SaveEditor | OpenEditor
     deriving (Eq, Ord, Show)
 
-data AppStatus = Normal | Saved | ErrorMsg String
+-- FIX: ErrorMsg now holds (Error String) and (Line Number)
+data AppStatus = Normal | Saved | ErrorMsg String Int 
 
 data AppState = AppState
     { _mode        :: AppMode
@@ -19,7 +20,7 @@ data AppState = AppState
     , _currentFile :: Maybe FilePath     
     , _recentFiles :: [FilePath]           
     , _status      :: AppStatus
-    , _isDirty     :: Bool -- NEW: Tracks if we have unsaved changes
+    , _isDirty     :: Bool 
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)

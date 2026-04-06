@@ -21,6 +21,11 @@ app = App
         , (attrName "success", fg V.green)
         , (attrName "saved",   fg V.yellow `V.withStyle` V.bold)
         , (attrName "title",   fg (V.rgbColor 255 144 47))
+        , (attrName "shape",     fg V.cyan)
+        , (attrName "csg",       fg V.magenta)
+        , (attrName "transform", fg V.blue)
+        , (attrName "number",    fg V.yellow)
+        , (attrName "errorBg",   bg V.red)
         ]
     }
 

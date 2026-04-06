@@ -1,24 +1,25 @@
 module AppCore where
 
--- FIX: Added getAppUserDataDirectory and createDirectoryIfMissing
 import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectoryIfMissing)
-import System.FilePath ((</>)) -- Safely joins paths with \ or /
+import System.FilePath ((</>))
 import Data.List (nub)
-import Text.Megaparsec (parse, errorBundlePretty)
+import qualified Data.List.NonEmpty as NE
+
+-- FIX: We import the core Megaparsec module and just the Position utilities
+import Text.Megaparsec
+import Text.Megaparsec.Pos (sourceLine, unPos) 
 
 import AST
 import Parser
 import Evaluator
 
 -- | PERSISTENCE HELPERS
--- Finds the global OS-specific config folder (e.g., AppData/Roaming/ironsmith)
 getCachePath :: IO FilePath
 getCachePath = do
     configDir <- getAppUserDataDirectory "ironsmith"
-    createDirectoryIfMissing True configDir -- Make sure the folder exists!
+    createDirectoryIfMissing True configDir 
     return (configDir </> ".ironsmith_recents")
 
--- Reads the hidden global cache file
 loadRecents :: IO [FilePath]
 loadRecents = do
     cachePath <- getCachePath
@@ -27,7 +28,6 @@ loadRecents = do
         then lines <$> readFile cachePath
         else return []
 
--- Adds a file to the top of the list, removes duplicates, keeps max 5, and saves globally
 saveRecent :: FilePath -> [FilePath] -> IO [FilePath]
 saveRecent path oldRecents = do
     cachePath <- getCachePath
@@ -36,15 +36,21 @@ saveRecent path oldRecents = do
     return newRecents
 
 -- | COMPILER BRIDGE
--- Takes raw code, parses it, compiles it, writes GLSL to disk, returns Error String if failed
-compileAndSave :: String -> IO (Maybe String)
+compileAndSave :: String -> IO (Maybe (String, Int))
 compileAndSave code =
     case parse pScript "editor" code of
-        Left bundle -> return $ Just (errorBundlePretty bundle)
+        Left bundle -> do
+            let errStr = errorBundlePretty bundle
+                -- 1. Grab the first error in the bundle
+                firstErr = NE.head (bundleErrors bundle)
+                -- 2. Fast-forward the parser state to exactly where the error happened
+                (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
+                -- 3. Extract the true line number
+                lineNum = unPos (sourceLine (pstateSourcePos posState))
+                
+            return $ Just (errStr, lineNum)
+            
         Right astScript -> do
             let glslData = compileToGLSL astScript
-            
-            -- This still saves to the Current Working Directory (like Vim!)
             writeFile "output.glsl" glslData
-            
             return Nothing

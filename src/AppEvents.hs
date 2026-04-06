@@ -11,6 +11,7 @@ import System.Directory (doesFileExist)
 import AppState
 import AppCore
 
+-- | GLOBAL ROUTER
 handleEvent :: BrickEvent Name e -> EventM Name AppState ()
 handleEvent (VtyEvent (V.EvKey (V.KChar 'q') [V.MCtrl])) = halt -- Global Killswitch
 handleEvent ev = do
@@ -20,8 +21,9 @@ handleEvent ev = do
         Editing       -> handleEditing ev
         SaveDialog    -> handleSaveDialog ev
         OpenDialog    -> handleOpenDialog ev
-        UnsavedPrompt -> handleUnsavedPrompt ev -- NEW
+        UnsavedPrompt -> handleUnsavedPrompt ev
 
+-- | 1. SPLASH SCREEN
 handleSplash :: BrickEvent Name e -> EventM Name AppState ()
 handleSplash (VtyEvent (V.EvKey V.KEsc []))   = halt
 handleSplash (VtyEvent (V.EvKey V.KEnter [])) = do
@@ -54,9 +56,10 @@ handleSplash (VtyEvent (V.EvKey (V.KChar c) []))
             else return ()
 handleSplash _ = return ()
 
+-- | 2. EDITING SCREEN
 handleEditing :: BrickEvent Name e -> EventM Name AppState ()
 handleEditing (VtyEvent (V.EvKey V.KEsc [])) = do
-    -- NEW: Intercept Escape key
+    -- Intercept Escape key to check for unsaved changes
     st <- get
     if _isDirty st 
         then put (st { _mode = UnsavedPrompt }) -- Prompt if unsaved
@@ -65,6 +68,7 @@ handleEditing (VtyEvent (V.EvKey V.KEsc [])) = do
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+
 handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
     st <- get
     case _currentFile st of
@@ -75,13 +79,13 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
             newRecents <- liftIO $ saveRecent path (_recentFiles st) 
             let newStatus = case newErr of
                     Nothing -> Saved
-                    Just e  -> ErrorMsg e
-            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False }) -- Clean!
+                    Just (e, lineNum) -> ErrorMsg e lineNum
+            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False })
         Nothing -> 
             put (st { _mode = SaveDialog })
 
 handleEditing ev = do
-    -- NEW: Compare text before and after the event to see if they typed
+    -- Compare text before and after the event to see if they actually typed
     st <- get 
     let oldText = E.getEditContents (_editor st)
     
@@ -96,14 +100,14 @@ handleEditing ev = do
             newErr <- liftIO $ compileAndSave (unlines newText)
             let newStatus = case newErr of
                     Nothing -> Normal
-                    Just e  -> ErrorMsg e
+                    Just (e, lineNum) -> ErrorMsg e lineNum
             put (st' { _status = newStatus, _isDirty = True })
         else 
             -- Text didn't change (e.g. they just pressed arrow keys)
             put st'
 
 
--- NEW EVENT ROUTER
+-- | 3. UNSAVED CHANGES PROMPT
 handleUnsavedPrompt :: BrickEvent Name e -> EventM Name AppState ()
 handleUnsavedPrompt (VtyEvent (V.EvKey V.KEsc [])) = do
     -- Cancel exit, go back to code
@@ -111,13 +115,13 @@ handleUnsavedPrompt (VtyEvent (V.EvKey V.KEsc [])) = do
     put (st { _mode = Editing })
 
 handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
-    -- Discard and Exit
+    -- Discard and Return to Splash
     st <- get
     put (st { _mode = Splash, _isDirty = False })
 handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'N') [])) = handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') []))
 
 handleUnsavedPrompt (VtyEvent (V.EvKey V.KEnter [])) = do
-    -- Save and Exit
+    -- Save and Return to Splash
     st <- get
     case _currentFile st of
         Just path -> do
@@ -131,7 +135,8 @@ handleUnsavedPrompt (VtyEvent (V.EvKey V.KEnter [])) = do
             put (st { _mode = SaveDialog })
 handleUnsavedPrompt _ = return ()
 
--- (Keep handleSaveDialog and handleOpenDialog exactly as they were...)
+
+-- | 4. SAVE DIALOG
 handleSaveDialog :: BrickEvent Name e -> EventM Name AppState ()
 handleSaveDialog (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
@@ -151,7 +156,7 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
     
     let newStatus = case newErr of
             Nothing -> Saved
-            Just e  -> ErrorMsg e
+            Just (e, lineNum) -> ErrorMsg e lineNum
     
     put (st { _mode = Editing
             , _currentFile = Just filename
@@ -164,6 +169,8 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
 handleSaveDialog ev = do
     zoom saveInputLens $ E.handleEditorEvent ev
 
+
+-- | 5. OPEN DIALOG
 handleOpenDialog :: BrickEvent Name e -> EventM Name AppState ()
 handleOpenDialog (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
@@ -190,7 +197,7 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
                     , _isDirty = False -- Clean!
                     })
         else do
-            put (st { _status = ErrorMsg "File not found!" })
+            put (st { _status = ErrorMsg "File not found!" 0 })
 
 handleOpenDialog ev = do
     zoom openInputLens $ E.handleEditorEvent ev
