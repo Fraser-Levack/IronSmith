@@ -1,0 +1,23 @@
+[package]
+name = "ironsmith-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.29.15"
+
+wgpu = { version = "0.19.4", features = ["glsl"] } 
+
+bytemuck = { version = "1.15", features = ["derive"] }
+
+anyhow = "1.0"
+
+pollster = "0.3"
+
+naga = "0.19"
+
+env_logger = "0.11"
+
+notify = "6.1.1"
+
+dirs = "5.0.1"
