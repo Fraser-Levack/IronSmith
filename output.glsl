@@ -12,5 +12,5 @@ float sdCappedCone(vec3 p, float h, float r1, float r2) {
 }
 
 float map(vec3 p) {
-    return min(max(sdBox(p, vec3(1.0, 1.0, 1.0)), -(sdBox((p - vec3(0.0, 1.0, 0.0)), vec3(0.5, 0.5, 0.5)))), 999999.0);
+    return sdBox(p, vec3(1.0, 1.0, 1.0));
 }

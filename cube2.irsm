@@ -1,1 +1,1 @@
-difference(cube(2,2,2), move(0,1,0,cube(1,1,1)))
+cube(2,2,2)

@@ -93,7 +93,7 @@ drawEditor st = ui
     statusWidget = case _status st of
         Normal            -> withAttr (attrName "success") $ str "Status: OK"
         Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
-        ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 5 $ vBox (map str (lines e))
+        ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
 
     ui = withBorderStyle unicode
          $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
