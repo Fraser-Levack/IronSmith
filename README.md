@@ -1,4 +1,4 @@
-# ⚒️ IronSmith
+# 🏰 IronSmith
 
 ![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange)
 ![Haskell](https://img.shields.io/badge/Compiler-Haskell-5e5086?logo=haskell)
@@ -92,6 +92,37 @@ difference(
 [ ] Exporting generated SDFs to .obj or .stl meshes
 
 [ ] Free-flight camera controls
+
+## 🤝 Contributing
+
+IronSmith is an open-source forge, and contributions of any size are highly appreciated! Whether you're fixing a typo, optimizing the raymarching engine, or extending the Haskell parser, we'd love your help.
+
+### How to Contribute
+
+1. **Fork the repository**
+2. **Create a new branch:** `git checkout -b feature/your-awesome-feature`
+3. **Make your changes** (Be sure to test both the Haskell TUI and the Rust Viewer if your feature bridges both!)
+4. **Commit your changes:** `git commit -m "Add some awesome feature"`
+5. **Push to the branch:** `git push origin feature/your-awesome-feature`
+6. **Open a Pull Request**
+
+### Areas We Need Help With
+* **Graphics (Rust):** Implementing material and color parsing in the GLSL generation.
+* **Language (Haskell):** Adding variables, looping constructs, or new primitives to the `.irsm` language.
+* **Tooling:** Exporting evaluated SDFs to standard 3D formats (`.obj` or `.stl`).
+* **Quality of Life:** Expanding the Rust viewer to include free-flight camera controls.
+
+### Development Guidelines
+* **Haskell:** Please ensure your code compiles cleanly. Running your code through standard linters like `hlint` is highly encouraged.
+* **Rust:** Keep the viewer blazing fast and safe. Please run `cargo fmt` and `cargo clippy` before submitting a PR to maintain code quality.
+
+## ✨ Contributors
+
+A massive thank you to everyone who has helped build the Forge!
+
+* **Fraser W Levack** - *Creator & Lead Developer* - [@Fraser-Levack](https://github.com/Fraser-Levack)
+
+*(Want to see your name here? Check out the section and open a PR!)*
 
 ## 📄 License
 This project is licensed under the MIT License - see the [LICENSE](LICENCE) file for details.
