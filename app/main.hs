@@ -3,6 +3,7 @@ module Main where
 import Brick
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
+import System.Directory (doesFileExist)
 
 import AppState
 import AppCore
@@ -32,10 +33,22 @@ main :: IO ()
 main = do
     recents <- loadRecents
     
-    -- 1. Create the initial demo file so the viewer has something to show immediately
-    _ <- compileAndSave "draw rotateY(u_time * 40, torus(4, 1, 32))"
+    -- 1. Check for the demo file in the root directory
+    let demoPath = "demo.irsm"
+    demoExists <- doesFileExist demoPath
     
-    -- 2. Launch the viewer immediately
+    if demoExists
+        then do
+            -- Load and compile the castle demo
+            code <- readFile demoPath
+            _ <- compileAndSave code
+            return ()
+        else do
+            -- Safety fallback if demo.irsm is missing
+            _ <- compileAndSave "torus(4, 1, 32)"
+            return ()
+    
+    -- 2. Launch the viewer (Piped so it doesn't break the TUI)
     h <- launchViewer
     
     let initialState = AppState
@@ -47,10 +60,11 @@ main = do
             , _recentFiles = recents
             , _status      = Normal
             , _isDirty     = False
-            , _viewerHandle = Just h -- Store the handle from the start
+            , _viewerHandle = Just h 
             }
             
     finalState <- defaultMain app initialState
+    
     -- 3. Cleanup
     stopViewer (_viewerHandle finalState)
     putStrLn "Forge cold. Viewer closed."

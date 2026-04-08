@@ -20,6 +20,17 @@ evalExpr env (Var name)  =
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
 
+-- --- FIX: BALANCED GLSL TREE ---
+-- This prevents the GPU compiler from throwing a Stack Overflow on massive files
+balancedMin :: [String] -> String
+balancedMin [] = "999999.0"
+balancedMin [x] = x
+balancedMin xs =
+    let mid = length xs `div` 2
+        (left, right) = splitAt mid xs
+    in "min(" ++ balancedMin left ++ ", " ++ balancedMin right ++ ")"
+-- ---------------------------------
+
 -- evalShape now takes the Point Variable name (e.g., "p") and returns a GLSL string
 evalShape :: Env -> Shape -> String -> String
 evalShape env (ShapeRef name) pVar =
@@ -60,36 +71,40 @@ evalShape env (Move ex ey ez innerShape) pVar =
     let mx = evalExpr env ex
         my = evalExpr env ey
         mz = evalExpr env ez
-        newP = "(" ++ pVar ++ " - vec3(" ++ show mx ++ ", " ++ show my ++ ", " ++ show mz ++ "))"
+        -- --- FIX: NEGATIVE ZERO BUG ---
+        -- Wrapped the injected floats in extra parentheses so `-0.0` parses safely in GLSL
+        newP = "(" ++ pVar ++ " - vec3((" ++ show mx ++ "), (" ++ show my ++ "), (" ++ show mz ++ ")))"
     in evalShape env innerShape newP
 
 evalShape env (RotateX edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
-        c = show (cos (-rad)) -- Reverse rotation for space folding!
+        c = show (cos (-rad)) 
         s = show (sin (-rad))
-        -- GLSL mat3 takes columns: (c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z)
-        newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, - (" ++ s ++ "), " ++ c ++ ") * " ++ pVar ++ ")"
+        -- --- FIX: NEGATIVE ZERO BUG ---
+        -- Added parenthesis around the negated sine: -(" ++ s ++ ")
+        newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ") * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 evalShape env (RotateY edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad))
         s = show (sin (-rad))
-        newP = "(mat3(" ++ c ++ ", 0.0, - (" ++ s ++ "), 0.0, 1.0, 0.0, " ++ s ++ ", 0.0, " ++ c ++ ") * " ++ pVar ++ ")"
+        newP = "(mat3(" ++ c ++ ", 0.0, -(" ++ s ++ "), 0.0, 1.0, 0.0, " ++ s ++ ", 0.0, " ++ c ++ ") * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 evalShape env (RotateZ edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad))
         s = show (sin (-rad))
-        newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, - (" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
+        newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
 
 -- 3. CONSTRUCTIVE SOLID GEOMETRY (CSG)
 evalShape env (Group shapes) pVar =
     if null shapes then "999999.0"
-    else foldl1 (\acc s -> "min(" ++ acc ++ ", " ++ s ++ ")") (map (\s -> evalShape env s pVar) shapes)
+    -- --- FIX: BALANCED GLSL TREE ---
+    else balancedMin (map (\s -> evalShape env s pVar) shapes)
 
 evalShape env (Union a b) pVar =
     "min(" ++ evalShape env a pVar ++ ", " ++ evalShape env b pVar ++ ")"
@@ -115,7 +130,6 @@ runScript env (stmt:rest) = case stmt of
         in runScript newEnv rest
         
     Draw shape -> 
-        -- Evaluate the shape starting with the GLSL variable "p"
         let sdfStr = evalShape env shape "p"
         in sdfStr : runScript env rest
 
@@ -124,7 +138,8 @@ runScript env (stmt:rest) = case stmt of
 compileToGLSL :: Script -> String
 compileToGLSL script = 
     let draws = runScript Map.empty script
-        sceneMap = if null draws then "999999.0" else foldl1 (\a b -> "min(" ++ a ++ ", " ++ b ++ ")") draws
+        -- --- FIX: BALANCED GLSL TREE ---
+        sceneMap = if null draws then "999999.0" else balancedMin draws
     in glslPrimitives ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
 
 glslPrimitives :: String

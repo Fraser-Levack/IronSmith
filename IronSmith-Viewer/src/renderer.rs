@@ -187,6 +187,11 @@ impl<'a> Renderer<'a> {
             }}
         "#, code = final_map_logic);
 
+        // --- FIX: HARDWARE ERROR SCOPE ---
+        // Pushing an error scope prevents wgpu from panicking asynchronously.
+        // It allows us to poll the GPU for validation errors safely.
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
         let vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed("
@@ -197,27 +202,16 @@ impl<'a> Renderer<'a> {
             ")),
         });
 
-        // --- THE PANIC FIREWALL ---
-        // wgpu internally calls unwrap() if the GLSL is invalid. 
-        // We catch that panic before it can kill our process.
-        let fs_module_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("IronSmith Fragment"),
-                source: wgpu::ShaderSource::Glsl {
-                    shader: std::borrow::Cow::Owned(full_shader_source),
-                    stage: naga::ShaderStage::Fragment,
-                    defines: naga::FastHashMap::default(),
-                },
-            })
-        }));
+        let fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("IronSmith Fragment"),
+            source: wgpu::ShaderSource::Glsl {
+                shader: std::borrow::Cow::Owned(full_shader_source),
+                stage: naga::ShaderStage::Fragment,
+                defines: naga::FastHashMap::default(),
+            },
+        });
 
-        let fs_module = match fs_module_result {
-            Ok(module) => module,
-            Err(_) => return Err(anyhow::anyhow!("wgpu caught an internal panic processing GLSL")),
-        };
-        // --------------------------
-
-        Ok(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState { module: &vs_module, entry_point: "main", buffers: &[] },
@@ -234,7 +228,17 @@ impl<'a> Renderer<'a> {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-        }))
+        });
+
+        // --- FIX: HARDWARE ERROR SCOPE EVALUATION ---
+        let error_future = device.pop_error_scope();
+        device.poll(wgpu::Maintain::Wait);
+        
+        if let Some(err) = pollster::block_on(error_future) {
+            return Err(anyhow::anyhow!("wgpu Validation Error: {}", err));
+        }
+
+        Ok(pipeline)
     }
 
     pub fn reload_shader(&mut self) -> Result<()> {
@@ -245,7 +249,7 @@ impl<'a> Renderer<'a> {
                 Ok(())
             }
             Err(e) => {
-                // If we get an error (or a caught panic), we return Err and KEEP the old render_pipeline!
+                // If we get an error, we return Err and KEEP the old render_pipeline!
                 Err(e)
             }
         }
