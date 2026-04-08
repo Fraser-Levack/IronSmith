@@ -24,6 +24,7 @@ data Shape
     | Intersection Shape Shape
     | Difference Shape Shape
     | ShapeRef String
+    | Repeat Expr Expr Expr Shape -- spacing in X, Y, Z, and the shape
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith

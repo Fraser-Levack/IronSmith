@@ -1,8 +1,27 @@
 // --- IronSmith Medieval Castle Demo ---
 
-// =======================
-// Base Terrain
-// =======================
-ground = cube(30, 2, 30)
+walls = difference(cube(20, 5, 20), cube(19, 6, 19))
 
-ground
+
+// Creates an infinite repeating line of crenellations spaced 3 units apart on the X axis
+inf_battlement = repeat(3, 0, 0, cube(1, 2, 1))
+
+// Punch the infinite line out with a boundary box to limit it to just the wall length!
+battlement = intersection(inf_battlement, cube(20, 5, 5))
+
+
+move(0,2,10,battlement)
+move(10,2,0, rotateY(90, battlement))
+move(-10,2,0, rotateY(90, battlement))
+move(0,2,-10,battlement)
+
+
+tower = group(cube(2,7,2))
+
+
+move(10,1,10,tower)
+move(10,1,-10,tower)
+move(-10,1,10,tower)
+move(-10,1,-10,tower)
+
+walls

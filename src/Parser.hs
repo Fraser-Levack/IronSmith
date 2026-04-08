@@ -140,6 +140,19 @@ pMove = do
     _ <- symbol ")" <?> "closing ')' for move"
     return (Move x y z innerShape)
 
+pRepeat :: Parser Shape
+pRepeat = do
+    shapeKeyword "repeat"
+    x <- pExpr <?> "X spacing"
+    _ <- symbol "," <?> "comma"
+    y <- pExpr <?> "Y spacing"
+    _ <- symbol "," <?> "comma"
+    z <- pExpr <?> "Z spacing"
+    _ <- symbol "," <?> "comma"
+    innerShape <- pShape <?> "shape to repeat"
+    _ <- symbol ")" <?> "closing ')' for repeat"
+    return (Repeat x y z innerShape)
+
 -- Helper to quickly generate rotation parsers
 pRotate :: String -> (Expr -> Shape -> Shape) -> Parser Shape
 pRotate name constructor = do
@@ -200,7 +213,8 @@ pShape = pGroup <|>
          pSphere <|> 
          pCube <|> 
          pCone <|>
-         pTorus <|> 
+         pTorus <|>
+         pRepeat <|>
          pShapeRef
 
 -------------------------------------------------

@@ -76,6 +76,14 @@ evalShape env (Move ex ey ez innerShape) pVar =
         newP = "(" ++ pVar ++ " - vec3((" ++ show mx ++ "), (" ++ show my ++ "), (" ++ show mz ++ ")))"
     in evalShape env innerShape newP
 
+evalShape env (Repeat ex ey ez innerShape) pVar =
+    let sx = show (evalExpr env ex)
+        sy = show (evalExpr env ey)
+        sz = show (evalExpr env ez)
+        -- Wrap the point in our GLSL repetition function
+        newP = "opRep(" ++ pVar ++ ", vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
+    in evalShape env innerShape newP
+
 evalShape env (RotateX edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad)) 
@@ -154,5 +162,12 @@ glslPrimitives = unlines [
     "    vec2 cb = q - k1 + k2*clamp(dot(k1-q,k2)/dot(k2,k2), 0.0, 1.0);",
     "    float s = (cb.x<0.0 && ca.y<0.0) ? -1.0 : 1.0;",
     "    return s*sqrt(min(dot(ca,ca),dot(cb,cb)));",
+    "}",
+    "vec3 opRep(vec3 p, vec3 c) {",
+    "    vec3 q = p;",
+    "    if (c.x > 0.0) q.x = mod(p.x + 0.5*c.x, c.x) - 0.5*c.x;",
+    "    if (c.y > 0.0) q.y = mod(p.y + 0.5*c.y, c.y) - 0.5*c.y;",
+    "    if (c.z > 0.0) q.z = mod(p.z + 0.5*c.z, c.z) - 0.5*c.z;",
+    "    return q;",
     "}"
     ]
