@@ -4,7 +4,9 @@ module Evaluator where
 import AST
 import qualified Data.Map as Map
 
-data IronValue = VNum Float | VShape Shape
+-- --- FIX: GLSL FUNCTION OPTIMIZATION ---
+-- We no longer store the Shape AST. We store the compiled GLSL function name!
+data IronValue = VNum Float | VFunc String
 type Env = Map.Map String IronValue
 
 -- Convert Degrees to Radians
@@ -20,8 +22,7 @@ evalExpr env (Var name)  =
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
 
--- --- FIX: BALANCED GLSL TREE ---
--- This prevents the GPU compiler from throwing a Stack Overflow on massive files
+-- Helper to create a balanced GLSL tree to prevent GPU compiler stack overflows
 balancedMin :: [String] -> String
 balancedMin [] = "999999.0"
 balancedMin [x] = x
@@ -29,16 +30,19 @@ balancedMin xs =
     let mid = length xs `div` 2
         (left, right) = splitAt mid xs
     in "min(" ++ balancedMin left ++ ", " ++ balancedMin right ++ ")"
--- ---------------------------------
+
 
 -- evalShape now takes the Point Variable name (e.g., "p") and returns a GLSL string
 evalShape :: Env -> Shape -> String -> String
+
+-- --- FIX: FUNCTION CALLING ---
+-- When we see a variable, we just call its compiled GLSL function!
 evalShape env (ShapeRef name) pVar =
     case Map.lookup name env of
-        Just (VShape storedShape) -> evalShape env storedShape pVar
+        Just (VFunc funcName) -> funcName ++ "(" ++ pVar ++ ")"
         _ -> "999999.0" -- If missing, return a huge distance so it renders nothing
 
--- 1. PRIMITIVE SHAPES (Note: Definition params are ignored for SDFs!)
+-- 1. PRIMITIVE SHAPES
 evalShape env (Cube ex ey ez) pVar = 
     let x = evalExpr env ex / 2.0
         y = evalExpr env ey / 2.0
@@ -66,30 +70,18 @@ evalShape env (Torus er et _) pVar =
     in "sdTorus(" ++ pVar ++ ", vec2(" ++ show r ++ ", " ++ show tr ++ "))"
 
 
--- 2. TRANSFORMATIONS (We transform the point 'pVar' in reverse!)
+-- 2. TRANSFORMATIONS
 evalShape env (Move ex ey ez innerShape) pVar =
     let mx = evalExpr env ex
         my = evalExpr env ey
         mz = evalExpr env ez
-        -- --- FIX: NEGATIVE ZERO BUG ---
-        -- Wrapped the injected floats in extra parentheses so `-0.0` parses safely in GLSL
         newP = "(" ++ pVar ++ " - vec3((" ++ show mx ++ "), (" ++ show my ++ "), (" ++ show mz ++ ")))"
-    in evalShape env innerShape newP
-
-evalShape env (Repeat ex ey ez innerShape) pVar =
-    let sx = show (evalExpr env ex)
-        sy = show (evalExpr env ey)
-        sz = show (evalExpr env ez)
-        -- Wrap the point in our GLSL repetition function
-        newP = "opRep(" ++ pVar ++ ", vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
     in evalShape env innerShape newP
 
 evalShape env (RotateX edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad)) 
         s = show (sin (-rad))
-        -- --- FIX: NEGATIVE ZERO BUG ---
-        -- Added parenthesis around the negated sine: -(" ++ s ++ ")
         newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ") * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
@@ -107,11 +99,18 @@ evalShape env (RotateZ edeg innerShape) pVar =
         newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
+-- For Repeat, we warp the point space using our opRep GLSL function!
+evalShape env (Repeat ex ey ez innerShape) pVar =
+    let sx = show (evalExpr env ex)
+        sy = show (evalExpr env ey)
+        sz = show (evalExpr env ez)
+        newP = "opRep(" ++ pVar ++ ", vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
+    in evalShape env innerShape newP
+
 
 -- 3. CONSTRUCTIVE SOLID GEOMETRY (CSG)
 evalShape env (Group shapes) pVar =
     if null shapes then "999999.0"
-    -- --- FIX: BALANCED GLSL TREE ---
     else balancedMin (map (\s -> evalShape env s pVar) shapes)
 
 evalShape env (Union a b) pVar =
@@ -124,31 +123,41 @@ evalShape env (Difference a b) pVar =
     "max(" ++ evalShape env a pVar ++ ", -(" ++ evalShape env b pVar ++ "))"
 
 
--- 4. SCRIPT RUNNER (Collects all Draw calls into a list of strings)
-runScript :: Env -> Script -> [String]
-runScript _ [] = [] 
+-- 4. SCRIPT RUNNER
+-- --- FIX: TUPLE RETURN TYPE ---
+-- runScript now returns ( [Generated Functions], [Draw Calls] )
+runScript :: Env -> Script -> ([String], [String])
+runScript _ [] = ([], []) 
 runScript env (stmt:rest) = case stmt of
     Assign name expr -> 
         let val = evalExpr env expr
             newEnv = Map.insert name (VNum val) env 
         in runScript newEnv rest 
         
+    -- --- FIX: AHEAD-OF-TIME COMPILATION ---
     AssignShape name shape -> 
-        let newEnv = Map.insert name (VShape shape) env 
-        in runScript newEnv rest
+        let sdfStr = evalShape env shape "p"
+            funcName = "shape_" ++ name
+            funcDef = "float " ++ funcName ++ "(vec3 p) {\n    return " ++ sdfStr ++ ";\n}"
+            newEnv = Map.insert name (VFunc funcName) env 
+            
+            (funcs, draws) = runScript newEnv rest
+        in (funcDef : funcs, draws)
         
     Draw shape -> 
         let sdfStr = evalShape env shape "p"
-        in sdfStr : runScript env rest
+            (funcs, draws) = runScript env rest
+        in (funcs, sdfStr : draws)
 
 
 -- 5. GLSL COMPILER (Wraps everything together)
 compileToGLSL :: Script -> String
 compileToGLSL script = 
-    let draws = runScript Map.empty script
-        -- --- FIX: BALANCED GLSL TREE ---
+    -- Unpack the generated functions and draw calls
+    let (funcs, draws) = runScript Map.empty script
         sceneMap = if null draws then "999999.0" else balancedMin draws
-    in glslPrimitives ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
+        functionsStr = unlines funcs
+    in glslPrimitives ++ "\n" ++ functionsStr ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
 
 glslPrimitives :: String
 glslPrimitives = unlines [
