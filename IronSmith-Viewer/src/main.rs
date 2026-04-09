@@ -2,6 +2,8 @@ mod renderer;
 use anyhow::Result;
 use std::sync::Arc;
 use std::path::PathBuf;
+use std::time::{Instant, Duration}; // --- FIX: Added Duration for throttle ---
+use std::io::Write; // --- FIX: Added Write for the logger ---
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -10,8 +12,25 @@ use winit::{
 };
 use renderer::Renderer;
 
+fn get_config_dir() -> PathBuf {
+    dirs::config_dir().expect("Config dir error").join("ironsmith")
+}
+
 fn get_glsl_path() -> PathBuf {
-    dirs::config_dir().expect("Config dir error").join("ironsmith").join("output.glsl")
+    get_config_dir().join("output.glsl")
+}
+
+// --- FIX: THE BLACK BOX LOGGER ---
+// This catches catastrophic Rust crashes and writes them to a file 
+// so they don't corrupt your Haskell TUI.
+fn setup_panic_logger() {
+    let log_path = get_config_dir().join("forge.log");
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(file, "\n--- FATAL CRASH ---");
+            let _ = writeln!(file, "{}", info);
+        }
+    }));
 }
 
 async fn run() -> Result<()> {
@@ -26,12 +45,14 @@ async fn run() -> Result<()> {
 
     let mut last_modified = std::fs::metadata(&glsl_path).map(|m| m.modified().unwrap()).unwrap_or(std::time::SystemTime::now());
     
+    // --- FIX: THE DEBOUNCE TIMER ---
+    let mut last_reload_time = Instant::now();
+    
     // Camera State
     let mut yaw: f32 = 0.0;
     let mut pitch: f32 = 0.4;
     let mut dist: f32 = 20.0;
     
-    // Input state
     let mut key_up = false; let mut key_down = false;
     let mut key_left = false; let mut key_right = false;
 
@@ -60,45 +81,40 @@ async fn run() -> Result<()> {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    // 1. Update Camera (Keep this logic)
                     if key_up { pitch += 0.05; }
                     if key_down { pitch -= 0.05; }
                     if key_left { yaw -= 0.05; }
                     if key_right { yaw += 0.05; }
                     pitch = pitch.clamp(-1.5, 1.5);
 
-                    // 2. HOT RELOAD CHECK (The critical fix)
+                    // --- FIX: THROTTLED HOT RELOAD ---
                     if let Ok(m) = std::fs::metadata(&glsl_path) {
                         if let Ok(mod_time) = m.modified() {
-                            if mod_time > last_modified {
-                                // CHANGE: We call it and handle the result without crashing
+                            // Check if file changed AND at least 150ms have passed since our last try
+                            if mod_time > last_modified && last_reload_time.elapsed() > Duration::from_millis(30) {
+                                last_reload_time = Instant::now(); // Reset timer
+                                
                                 match renderer.reload_shader() {
                                     Ok(_) => {
-                                        // eprintln!("Shader successfully forged!");
+                                        // Success! Update the modification tracker
                                         last_modified = mod_time;
+                                        renderer.log_message("Shader compiled successfully.");
                                     }
                                     Err(e) => {
-                                        // If the user is mid-sentence typing "cube", 
-                                        // this will trigger. We just print it and move on.
-                                        eprintln!("Forge Error (Temporary): {}", e);
-                                        // We DON'T update last_modified here so it tries again 
-                                        // next frame until the code is valid.
+                                        // Keep last_modified the same so it tries again in 150ms.
+                                        // Write the specific shader error to the log file!
+                                        renderer.log_message(&format!("Shader Error: {}", e));
                                     }
                                 }
                             }
                         }
                     }
-
-                    // 3. Update and Render
-                    renderer.update(yaw, pitch, dist);
                     
-                    // CHANGE: Handle render errors (like Surface Lost) gracefully too
+                    renderer.update(yaw, pitch, dist);
                     match renderer.render() {
                         Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                            renderer.resize(renderer.size);
-                        }
-                        Err(e) => eprintln!("Render error: {:?}", e),
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => renderer.resize(renderer.size),
+                        Err(e) => renderer.log_message(&format!("Render Error: {:?}", e)),
                     }
                 }
                 _ => {}
@@ -111,5 +127,6 @@ async fn run() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    setup_panic_logger(); // Initialize the black box
     pollster::block_on(run())
 }

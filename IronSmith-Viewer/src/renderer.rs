@@ -4,6 +4,7 @@ use std::time::Instant;
 use std::path::PathBuf;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+use std::io::Write; 
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -107,7 +108,6 @@ impl<'a> Renderer<'a> {
         let render_pipeline = match Self::create_pipeline_internal(&device, &pipeline_layout, config.format, haskell_code) {
             Ok(pipeline) => pipeline,
             Err(_) => {
-                // Initial Load Failed. Use the Emergency Pulse Fallback.
                 Self::create_pipeline_internal(&device, &pipeline_layout, config.format, None)?
             }
         };
@@ -117,6 +117,13 @@ impl<'a> Renderer<'a> {
             render_pipeline, pipeline_layout, uniform_buffer,
             bind_group, uniforms, start_time: Instant::now(), glsl_path,
         })
+    }
+
+    pub fn log_message(&self, msg: &str) {
+        let log_path = self.glsl_path.with_file_name("forge.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
+            let _ = writeln!(file, "{}", msg);
+        }
     }
 
     fn create_pipeline_internal(
@@ -187,9 +194,6 @@ impl<'a> Renderer<'a> {
             }}
         "#, code = final_map_logic);
 
-        // --- FIX: HARDWARE ERROR SCOPE ---
-        // Pushing an error scope prevents wgpu from panicking asynchronously.
-        // It allows us to poll the GPU for validation errors safely.
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -202,14 +206,23 @@ impl<'a> Renderer<'a> {
             ")),
         });
 
-        let fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("IronSmith Fragment"),
-            source: wgpu::ShaderSource::Glsl {
-                shader: std::borrow::Cow::Owned(full_shader_source),
-                stage: naga::ShaderStage::Fragment,
-                defines: naga::FastHashMap::default(),
-            },
-        });
+        // --- FIX: THE PANIC FIREWALL RETURNED ---
+        // wgpu's GLSL parser still panics on severe syntax errors, ignoring the error scope.
+        let fs_module_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("IronSmith Fragment"),
+                source: wgpu::ShaderSource::Glsl {
+                    shader: std::borrow::Cow::Owned(full_shader_source),
+                    stage: naga::ShaderStage::Fragment,
+                    defines: naga::FastHashMap::default(),
+                },
+            })
+        }));
+
+        let fs_module = match fs_module_result {
+            Ok(module) => module,
+            Err(_) => return Err(anyhow::anyhow!("wgpu encountered a fatal syntax panic in GLSL.")),
+        };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Pipeline"),
@@ -230,7 +243,6 @@ impl<'a> Renderer<'a> {
             multiview: None,
         });
 
-        // --- FIX: HARDWARE ERROR SCOPE EVALUATION ---
         let error_future = device.pop_error_scope();
         device.poll(wgpu::Maintain::Wait);
         
@@ -242,16 +254,21 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn reload_shader(&mut self) -> Result<()> {
-        let haskell_code = std::fs::read_to_string(&self.glsl_path).ok();
-        match Self::create_pipeline_internal(&self.device, &self.pipeline_layout, self.config.format, haskell_code) {
+        let haskell_code = std::fs::read_to_string(&self.glsl_path)
+            .context("File locked or unreadable")?;
+            
+        // --- FIX: THE RACE CONDITION SHIELD ---
+        // Do not attempt to compile if Haskell has truncated the file but hasn't written to it yet!
+        if haskell_code.trim().is_empty() || !haskell_code.contains("map(") {
+            return Err(anyhow::anyhow!("File is mid-write (missing map function)"));
+        }
+            
+        match Self::create_pipeline_internal(&self.device, &self.pipeline_layout, self.config.format, Some(haskell_code)) {
             Ok(new_pipeline) => {
                 self.render_pipeline = new_pipeline;
                 Ok(())
             }
-            Err(e) => {
-                // If we get an error, we return Err and KEEP the old render_pipeline!
-                Err(e)
-            }
+            Err(e) => Err(e)
         }
     }
 
