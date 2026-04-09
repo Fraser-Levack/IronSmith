@@ -1,27 +1,63 @@
-// --- IronSmith Medieval Castle Demo ---
-
 walls = difference(cube(20, 5, 20), cube(19, 6, 19))
 
+gate_house_main = cube(6, 7, 3)
 
-// Creates an infinite repeating line of crenellations spaced 3 units apart on the X axis
+gate_house_roof = difference(move(0,3.5,0, rotateZ(45, cube(4.24,4.24,3))), move(0,6.5,0,cube(8,3,5)))
+
+gate_house = group(gate_house_roof, gate_house_main)
+
+
 inf_battlement = repeat(3, 0, 0, cube(1, 2, 1))
 
-// Punch the infinite line out with a boundary box to limit it to just the wall length!
 battlement = intersection(inf_battlement, cube(20, 5, 5))
 
-
-move(0,2,10,battlement)
-move(10,2,0, rotateY(90, battlement))
-move(-10,2,0, rotateY(90, battlement))
+battlements = group (
+move(0,2,10,battlement),
+move(10,2,0, rotateY(90, battlement)),
+move(-10,2,0, rotateY(90, battlement)),
 move(0,2,-10,battlement)
-
+)
 
 tower = group(cube(2,7,2))
 
-
-move(10,1,10,tower)
-move(10,1,-10,tower)
-move(-10,1,10,tower)
+towers = group(
+move(10,1,10,tower),
+move(10,1,-10,tower),
+move(-10,1,10,tower),
 move(-10,1,-10,tower)
+)
 
-walls
+keep_base = cube(6,8,6)
+
+keep_towers = intersection(move(3,1,3,repeat(6, 0, 6, cube(2,10,2))), cube(8,13,8))
+
+keep_main = group(keep_base, keep_towers)
+
+side_entrance_base = cube(6,4,2)
+side_entrance_top = rotateX(90,cylinder(3,4,2))
+side_entrance_door = move(0,-1,0,cube(1,2,4))
+
+side_entrance = difference(group(side_entrance_base, move(0,2,0,side_entrance_top)), side_entrance_door)
+
+keep = group (
+move(4,0,-6.25,rotateY(90,side_entrance)),
+move(-4,0,-6.25,rotateY(90,side_entrance)),
+move(0, 2, -6, keep_main)
+)
+
+cut_out = group( 
+cube(3,4,5),
+move(0,2,0,rotateX(90, cylinder(1.5,4,5)))
+)
+
+move(0,-1,-2,difference(cube(6,3,4),move(0,-0.5,1,cube(1,2,4))))
+
+move(0,0.5,-2,rotateZ(90, cylinder(2,4,6)))
+
+// -- Castle --
+
+difference(move(0,1,9.5,gate_house), move(0,0,10,cut_out))
+difference(battlements, move(0,0,10,cut_out))
+towers
+keep
+difference(walls, move(0,0,10,cut_out))

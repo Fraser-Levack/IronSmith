@@ -4,8 +4,6 @@ module Evaluator where
 import AST
 import qualified Data.Map as Map
 
--- --- FIX: GLSL FUNCTION OPTIMIZATION ---
--- We no longer store the Shape AST. We store the compiled GLSL function name!
 data IronValue = VNum Float | VFunc String
 type Env = Map.Map String IronValue
 
@@ -22,7 +20,7 @@ evalExpr env (Var name)  =
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
 
--- Helper to create a balanced GLSL tree to prevent GPU compiler stack overflows
+-- Helper for shapes nested deeply inside differences/intersections
 balancedMin :: [String] -> String
 balancedMin [] = "999999.0"
 balancedMin [x] = x
@@ -31,16 +29,24 @@ balancedMin xs =
         (left, right) = splitAt mid xs
     in "min(" ++ balancedMin left ++ ", " ++ balancedMin right ++ ")"
 
+-- --- FIX: THE AST FLATTENER ---
+-- This mathematically distributes combinations and transforms into a flat list!
+flattenShapes :: Shape -> [Shape]
+flattenShapes (Group shapes)   = concatMap flattenShapes shapes
+flattenShapes (Union a b)      = flattenShapes a ++ flattenShapes b
+flattenShapes (Move x y z s)   = map (Move x y z) (flattenShapes s)
+flattenShapes (RotateX d s)    = map (RotateX d) (flattenShapes s)
+flattenShapes (RotateY d s)    = map (RotateY d) (flattenShapes s)
+flattenShapes (RotateZ d s)    = map (RotateZ d) (flattenShapes s)
+flattenShapes (Repeat x y z s) = map (Repeat x y z) (flattenShapes s)
+flattenShapes other            = [other] -- Differences, Intersections, and Primitives stop the flattening.
 
--- evalShape now takes the Point Variable name (e.g., "p") and returns a GLSL string
+
 evalShape :: Env -> Shape -> String -> String
-
--- --- FIX: FUNCTION CALLING ---
--- When we see a variable, we just call its compiled GLSL function!
 evalShape env (ShapeRef name) pVar =
     case Map.lookup name env of
         Just (VFunc funcName) -> funcName ++ "(" ++ pVar ++ ")"
-        _ -> "999999.0" -- If missing, return a huge distance so it renders nothing
+        _ -> "999999.0" 
 
 -- 1. PRIMITIVE SHAPES
 evalShape env (Cube ex ey ez) pVar = 
@@ -99,7 +105,6 @@ evalShape env (RotateZ edeg innerShape) pVar =
         newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env innerShape newP
 
--- For Repeat, we warp the point space using our opRep GLSL function!
 evalShape env (Repeat ex ey ez innerShape) pVar =
     let sx = show (evalExpr env ex)
         sy = show (evalExpr env ey)
@@ -124,8 +129,6 @@ evalShape env (Difference a b) pVar =
 
 
 -- 4. SCRIPT RUNNER
--- --- FIX: TUPLE RETURN TYPE ---
--- runScript now returns ( [Generated Functions], [Draw Calls] )
 runScript :: Env -> Script -> ([String], [String])
 runScript _ [] = ([], []) 
 runScript env (stmt:rest) = case stmt of
@@ -134,35 +137,46 @@ runScript env (stmt:rest) = case stmt of
             newEnv = Map.insert name (VNum val) env 
         in runScript newEnv rest 
         
-    -- --- FIX: AHEAD-OF-TIME COMPILATION ---
     AssignShape name shape -> 
-        let sdfStr = evalShape env shape "p"
+        -- --- FIX: FLATTEN VARIABLES ---
+        let flatShapes = flattenShapes shape
             funcName = "shape_" ++ name
-            funcDef = "float " ++ funcName ++ "(vec3 p) {\n    return " ++ sdfStr ++ ";\n}"
+            
+            funcBody = if null flatShapes 
+                       then "    return 999999.0;\n"
+                       else if length flatShapes == 1
+                       -- If it's just one item, keep it clean and simple
+                       then "    return " ++ evalShape env (head flatShapes) "p" ++ ";\n"
+                       -- If it's a group, linearize it!
+                       else "    float d = 999999.0;\n" ++
+                            unlines (map (\s -> "    d = min(d, " ++ evalShape env s "p" ++ ");") flatShapes) ++
+                            "    return d;\n"
+                            
+            funcDef = "float " ++ funcName ++ "(vec3 p) {\n" ++ funcBody ++ "}"
             newEnv = Map.insert name (VFunc funcName) env 
             
             (funcs, draws) = runScript newEnv rest
         in (funcDef : funcs, draws)
         
     Draw shape -> 
-        let sdfStr = evalShape env shape "p"
+        -- --- FIX: FLATTEN DRAW CALLS ---
+        let flatShapes = flattenShapes shape
+            sdfStrs = map (\s -> evalShape env s "p") flatShapes
             (funcs, draws) = runScript env rest
-        in (funcs, sdfStr : draws)
+        in (funcs, sdfStrs ++ draws)
 
 
 -- 5. GLSL COMPILER (Wraps everything together)
 compileToGLSL :: Script -> String
 compileToGLSL script = 
-    -- Unpack the generated functions and draw calls
     let (funcs, draws) = runScript Map.empty script
         functionsStr = unlines funcs
         
-        -- --- FIX: THE LINEAR EVALUATOR ---
-        -- We stop building giant tree expressions and use standard sequential logic.
         mapBody = if null draws 
                   then "    return 999999.0;\n"
+                  else if length draws == 1
+                  then "    return " ++ head draws ++ ";\n"
                   else "    float d = 999999.0;\n" ++
-                       -- Accumulate the distances step-by-step
                        unlines (map (\drawCall -> "    d = min(d, " ++ drawCall ++ ");") draws) ++
                        "    return d;\n"
                        
