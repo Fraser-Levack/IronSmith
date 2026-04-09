@@ -33,20 +33,18 @@ main :: IO ()
 main = do
     recents <- loadRecents
     
-    -- 1. Check for the demo file in the root directory
-    let demoPath = "demo.irsm"
+    -- --- FIX: USE GLOBAL DEMO PATH ---
+    demoPath <- getDemoPath
     demoExists <- doesFileExist demoPath
     
     if demoExists
         then do
-            -- Load and compile the castle demo
+            -- Load and compile the castle demo from the global config folder
             code <- readFile demoPath
-            -- FIX: Added 'True' for the initial load
             _ <- compileAndSave True code
             return ()
         else do
-            -- Safety fallback if demo.irsm is missing
-            -- FIX: Added 'True' for the initial load
+            -- Safety fallback if demo.irsm is missing from the global folder
             _ <- compileAndSave True "torus(4, 1, 32)"
             return ()
     

@@ -6,7 +6,7 @@ import System.FilePath ((</>))
 import Data.List (nub)
 import qualified Data.List.NonEmpty as NE
 import Control.Exception (catch, SomeException)
-import Control.Concurrent (forkIO) -- FIX: Allows background threads!
+import Control.Concurrent (forkIO) 
 
 import Text.Megaparsec
 import Text.Megaparsec.Pos (sourceLine, unPos) 
@@ -51,6 +51,12 @@ getGlslPath = do
     dir <- getConfigDir
     return (dir </> "output.glsl")
 
+-- --- FIX: GLOBAL DEMO PATH ---
+getDemoPath :: IO FilePath
+getDemoPath = do
+    dir <- getConfigDir
+    return (dir </> "demo.irsm")
+
 loadRecents :: IO [FilePath]
 loadRecents = do
     cachePath <- getCachePath
@@ -66,17 +72,14 @@ saveRecent path oldRecents = do
     writeFile cachePath (unlines newRecents)
     return newRecents
 
--- | SEND GLSL OVER TCP (Asynchronous!)
+-- | SEND GLSL OVER TCP
 sendToViewer :: String -> IO ()
 sendToViewer glsl = do
-    -- FIX: forkIO spawns this on a background thread so the TUI never stutters!
     _ <- forkIO $ withSocketsDo $ do
         catch (do
-            -- Pre-define hints to avoid slow DNS lookups on Windows
-            let hints = defaultHints { addrFamily = AF_INET, addrSocketType = Stream }
-            addr <- head <$> getAddrInfo (Just hints) (Just "127.0.0.1") (Just "7878")
-            sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-            connect sock (addrAddress addr)
+            sock <- socket AF_INET Stream 0
+            let addr = SockAddrInet 7878 (tupleToHostAddress (127, 0, 0, 1))
+            connect sock addr
             sendAll sock (C8.pack glsl)
             close sock
             ) (\(e :: SomeException) -> return ())
@@ -97,7 +100,7 @@ compileAndSave isHardSave code =
         Right astScript -> do
             let glslData = compileToGLSL astScript
             
-            -- Beam instantly to RAM (Now running in the background)
+            -- Beam instantly to RAM
             sendToViewer glslData
             
             if isHardSave 
