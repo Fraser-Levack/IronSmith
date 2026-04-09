@@ -155,9 +155,18 @@ compileToGLSL :: Script -> String
 compileToGLSL script = 
     -- Unpack the generated functions and draw calls
     let (funcs, draws) = runScript Map.empty script
-        sceneMap = if null draws then "999999.0" else balancedMin draws
         functionsStr = unlines funcs
-    in glslPrimitives ++ "\n" ++ functionsStr ++ "\nfloat map(vec3 p) {\n    return " ++ sceneMap ++ ";\n}\n"
+        
+        -- --- FIX: THE LINEAR EVALUATOR ---
+        -- We stop building giant tree expressions and use standard sequential logic.
+        mapBody = if null draws 
+                  then "    return 999999.0;\n"
+                  else "    float d = 999999.0;\n" ++
+                       -- Accumulate the distances step-by-step
+                       unlines (map (\drawCall -> "    d = min(d, " ++ drawCall ++ ");") draws) ++
+                       "    return d;\n"
+                       
+    in glslPrimitives ++ "\n" ++ functionsStr ++ "\nfloat map(vec3 p) {\n" ++ mapBody ++ "}\n"
 
 glslPrimitives :: String
 glslPrimitives = unlines [
