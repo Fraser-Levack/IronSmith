@@ -9,7 +9,6 @@ use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
-    keyboard::{KeyCode, PhysicalKey},
 };
 use renderer::Renderer;
 
@@ -46,15 +45,19 @@ async fn run() -> Result<()> {
     let mut renderer = Renderer::new(window.clone(), initial_glsl, log_path).await?;
     
     let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
-    // MUST be non-blocking so the `while` loop can cleanly exit when the queue is empty
     listener.set_nonblocking(true).expect("Cannot set non-blocking");
     
     let mut yaw: f32 = 0.0;
     let mut pitch: f32 = 0.4;
     let mut dist: f32 = 20.0;
     
-    let mut key_up = false; let mut key_down = false;
-    let mut key_left = false; let mut key_right = false;
+    // NEW: Target variables for smooth interpolation
+    let mut target_yaw: f32 = yaw;
+    let mut target_pitch: f32 = pitch;
+    let mut target_dist: f32 = dist;
+    
+    // Auto-orbit starts true to match the Haskell OrbitMode default
+    let mut auto_orbit = true;
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
@@ -62,58 +65,67 @@ async fn run() -> Result<()> {
             Event::WindowEvent { event, window_id } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(ps) => renderer.resize(ps),
-                WindowEvent::KeyboardInput { event: KeyEvent { physical_key, state, .. }, .. } => {
-                    let pressed = state == ElementState::Pressed;
-                    if let PhysicalKey::Code(code) = physical_key {
-                        match code {
-                            KeyCode::ArrowUp | KeyCode::KeyW => key_up = pressed,
-                            KeyCode::ArrowDown | KeyCode::KeyS => key_down = pressed,
-                            KeyCode::ArrowLeft | KeyCode::KeyA => key_left = pressed,
-                            KeyCode::ArrowRight | KeyCode::KeyD => key_right = pressed,
-                            _ => {}
-                        }
-                    }
-                }
+                
                 WindowEvent::MouseWheel { delta, .. } => {
                     if let MouseScrollDelta::LineDelta(_, y) = delta {
-                        dist = (dist - y).clamp(2.0, 100.0);
+                        // NEW: Modify the target, increase the multiplier slightly for better feel
+                        target_dist = (target_dist - y * 2.0).clamp(2.0, 100.0);
                     }
                 }
+                
                 WindowEvent::RedrawRequested => {
-                    if key_up { pitch += 0.05; }
-                    if key_down { pitch -= 0.05; }
-                    if key_left { yaw -= 0.05; }
-                    if key_right { yaw += 0.05; }
-                    pitch = pitch.clamp(-1.5, 1.5);
-
-                    // --- THE TCP BACKLOG DRAINER ---
                     let mut got_new_shader = false;
                     let mut latest_code = String::new();
                     
-                    // This while loop pulls EVERY pending connection from the OS instantly
+                    // --- THE TCP BACKLOG DRAINER & COMMAND ROUTER ---
                     while let Ok((mut stream, _)) = listener.accept() {
-                        // Make the individual stream blocking so we can read the whole message
                         let _ = stream.set_nonblocking(false);
-                        // Add a strict timeout so a fragmented packet never freezes the window
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                         
                         let mut buffer = String::new();
                         if stream.read_to_string(&mut buffer).is_ok() {
-                            if buffer.contains("map(") {
-                                // Overwrite any previous code from this frame. We only care about the latest!
+                            
+                            // Check if Haskell sent a Command or a Shader
+                            if buffer.starts_with("CMD:") {
+                                match buffer.trim() {
+                                    "CMD:OrbitMode"  => auto_orbit = true,
+                                    "CMD:StaticMode" => auto_orbit = false,
+                                    "CMD:FlyMode"    => auto_orbit = false, 
+                                    // NEW: Modify targets, and bump the speed to 0.1 for responsiveness
+                                    "CMD:PITCH_UP"   => target_pitch += 0.1,
+                                    "CMD:PITCH_DOWN" => target_pitch -= 0.1,
+                                    "CMD:YAW_LEFT"   => target_yaw -= 0.1,
+                                    "CMD:YAW_RIGHT"  => target_yaw += 0.1,
+                                    _ => {}
+                                }
+                            } else if buffer.contains("map(") {
                                 latest_code = buffer;
                                 got_new_shader = true;
                             }
                         }
-                    }
+                    } // <-- End of the TCP while loop
                     
-                    // Only trigger the heavy GPU compiler ONCE per frame, even if 50 packets arrived
                     if got_new_shader {
                         match renderer.reload_shader(&latest_code) {
                             Ok(_) => renderer.log_message("Shader updated via TCP socket!"),
                             Err(e) => renderer.log_message(&format!("Shader Error: {}", e)),
                         }
                     }
+                    
+                    // Drive the target continuously if Orbiting
+                    if auto_orbit {
+                        target_yaw -= 0.003; 
+                    }
+                    
+                    // Constrain the targets so we don't flip the camera upside down
+                    target_pitch = target_pitch.clamp(-1.5, 1.5);
+                    
+                    let interpolation_f = 0.1; // Adjust this for more/less smoothing
+                    // NEW: The Smoothing Math (Linear Interpolation)
+                    // The '0.1' is the stiffness. Lower (e.g., 0.05) is floatier, Higher (e.g., 0.3) is snappier.
+                    yaw += (target_yaw - yaw) * interpolation_f;
+                    pitch += (target_pitch - pitch) * interpolation_f;
+                    dist += (target_dist - dist) * interpolation_f;
                     
                     renderer.update(yaw, pitch, dist);
                     match renderer.render() {
@@ -124,7 +136,6 @@ async fn run() -> Result<()> {
                 }
                 _ => {}
             },
-            // This is crucial: it tells winit to immediately request another redraw, keeping the game loop spinning
             Event::AboutToWait => { window.request_redraw(); }
             _ => {}
         }

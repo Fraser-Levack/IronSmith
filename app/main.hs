@@ -53,6 +53,7 @@ main = do
     
     let initialState = AppState
             { _mode        = Splash
+            , _viewerMode   = OrbitMode
             , _editor      = E.editor CodeEditor Nothing "" 
             , _saveInput   = E.editor SaveEditor (Just 1) "" 
             , _openInput   = E.editor OpenEditor (Just 1) ""

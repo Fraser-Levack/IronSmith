@@ -62,6 +62,17 @@ handleEditing (VtyEvent (V.EvKey V.KEsc [])) = do
         then put (st { _mode = UnsavedPrompt })
         else put (st { _mode = Splash })
 
+-- CYCLE MODES (Ctrl+E)
+handleEditing (VtyEvent (V.EvKey (V.KChar 'e') [V.MCtrl])) = do
+    st <- get
+    let nextMode = case _viewerMode st of
+            OrbitMode  -> StaticMode
+            StaticMode -> FlyMode
+            FlyMode    -> OrbitMode
+    
+    liftIO $ sendToViewer ("CMD:" ++ show nextMode)
+    put (st { _viewerMode = nextMode })
+
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
@@ -72,7 +83,6 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            -- True: Hard save creates output.glsl
             newErr <- liftIO $ compileAndSave True code 
             newRecents <- liftIO $ saveRecent path (_recentFiles st) 
             let newStatus = case newErr of
@@ -82,7 +92,39 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
         Nothing -> 
             put (st { _mode = SaveDialog })
 
-handleEditing ev = do
+-- INTERCEPT MOVEMENT KEYS (For FlyMode)
+handleEditing brickEv@(VtyEvent ev) | isMovementKey ev = do
+    st <- get
+    if _viewerMode st == FlyMode
+        then do
+            let cmd = case ev of
+                        V.EvKey V.KUp []         -> "CMD:PITCH_UP"
+                        V.EvKey (V.KChar 'w') [] -> "CMD:PITCH_UP"
+                        V.EvKey V.KDown []       -> "CMD:PITCH_DOWN"
+                        V.EvKey (V.KChar 's') [] -> "CMD:PITCH_DOWN"
+                        V.EvKey V.KLeft []       -> "CMD:YAW_LEFT"
+                        V.EvKey (V.KChar 'a') [] -> "CMD:YAW_LEFT"
+                        V.EvKey V.KRight []      -> "CMD:YAW_RIGHT"
+                        V.EvKey (V.KChar 'd') [] -> "CMD:YAW_RIGHT"
+                        _                        -> ""
+            liftIO $ sendToViewer cmd
+            return () -- Consumes the event so it doesn't type into the editor
+        else do
+            handleEditorInput brickEv -- Passes it through to type normally
+  where
+    isMovementKey (V.EvKey V.KUp []) = True
+    isMovementKey (V.EvKey V.KDown []) = True
+    isMovementKey (V.EvKey V.KLeft []) = True
+    isMovementKey (V.EvKey V.KRight []) = True
+    isMovementKey (V.EvKey (V.KChar c) []) = c `elem` ['w', 'a', 's', 'd']
+    isMovementKey _ = False
+
+-- Catch-all for standard typing
+handleEditing ev = handleEditorInput ev
+
+-- | HELPER: Runs standard editor inputs and triggers compilation
+handleEditorInput :: BrickEvent Name e -> EventM Name AppState ()
+handleEditorInput ev = do
     st <- get 
     let oldText = E.getEditContents (_editor st)
     
@@ -93,7 +135,6 @@ handleEditing ev = do
     
     if oldText /= newText
         then do
-            -- False: Soft save for instant rendering (RAM only)
             newErr <- liftIO $ compileAndSave False (unlines newText)
             let newStatus = case newErr of
                     Nothing -> Normal
@@ -120,7 +161,6 @@ handleUnsavedPrompt (VtyEvent (V.EvKey V.KEnter [])) = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            -- True: Hard save
             _ <- liftIO $ compileAndSave True code
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
             put (st { _mode = Splash, _isDirty = False, _recentFiles = newRecents })
@@ -144,7 +184,6 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
         code = unlines $ E.getEditContents (_editor st)
     
     liftIO $ writeFile filename code
-    -- True: Hard save
     newErr <- liftIO $ compileAndSave True code
     newRecents <- liftIO $ saveRecent filename (_recentFiles st) 
     
@@ -181,7 +220,6 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
     if exists
         then do
             content <- liftIO $ readFile path
-            -- True: Hard save on open
             _ <- liftIO $ compileAndSave True content
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
             put (st { _mode = Editing

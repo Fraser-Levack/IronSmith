@@ -95,12 +95,17 @@ drawEditor st = ui
         Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
         ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
 
+    modeIndicator = case _viewerMode st of
+        OrbitMode  -> withAttr (attrName "title") $ str " -- ORBIT EDIT -- "
+        StaticMode -> withAttr (attrName "success") $ str " -- STATIC EDIT -- "
+        FlyMode    -> withAttr (attrName "errorBg") $ str " -- FLY MODE (WASD) -- "
+
     ui = withBorderStyle unicode
          $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
          $ vBox
              [ padAll 1 codeWidget
              , hBorder
-             , padAll 1 statusWidget
+             , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget] 
              ]
 
 drawUnsavedPrompt :: AppState -> Widget Name

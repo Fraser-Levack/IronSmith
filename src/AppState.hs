@@ -13,8 +13,12 @@ data Name = CodeEditor | SaveEditor | OpenEditor
 -- FIX: ErrorMsg now holds (Error String) and (Line Number)
 data AppStatus = Normal | Saved | ErrorMsg String Int 
 
+data ViewerMode = OrbitMode | StaticMode | FlyMode
+    deriving (Eq, Show)
+
 data AppState = AppState
     { _mode        :: AppMode
+    , _viewerMode   :: ViewerMode
     , _editor      :: E.Editor String Name
     , _saveInput   :: E.Editor String Name 
     , _openInput   :: E.Editor String Name 
