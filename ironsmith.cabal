@@ -32,4 +32,6 @@ executable ironsmith
                       microlens,
                       directory,
                       filepath,
-                      process
+                      process,
+                      network,
+                      bytestring

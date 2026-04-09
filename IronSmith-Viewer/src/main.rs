@@ -2,8 +2,9 @@ mod renderer;
 use anyhow::Result;
 use std::sync::Arc;
 use std::path::PathBuf;
-use std::time::{Instant, Duration}; // --- FIX: Added Duration for throttle ---
-use std::io::Write; // --- FIX: Added Write for the logger ---
+use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::time::Duration;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -20,9 +21,6 @@ fn get_glsl_path() -> PathBuf {
     get_config_dir().join("output.glsl")
 }
 
-// --- FIX: THE BLACK BOX LOGGER ---
-// This catches catastrophic Rust crashes and writes them to a file 
-// so they don't corrupt your Haskell TUI.
 fn setup_panic_logger() {
     let log_path = get_config_dir().join("forge.log");
     std::panic::set_hook(Box::new(move |info| {
@@ -40,15 +38,17 @@ async fn run() -> Result<()> {
         .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
         .build(&event_loop)?);
 
+    let log_path = get_config_dir().join("forge.log");
     let glsl_path = get_glsl_path();
-    let mut renderer = Renderer::new(window.clone(), glsl_path.clone()).await?;
-
-    let mut last_modified = std::fs::metadata(&glsl_path).map(|m| m.modified().unwrap()).unwrap_or(std::time::SystemTime::now());
     
-    // --- FIX: THE DEBOUNCE TIMER ---
-    let mut last_reload_time = Instant::now();
+    // Read the last hard-saved code so we don't boot into the emergency sphere
+    let initial_glsl = std::fs::read_to_string(&glsl_path).unwrap_or_default();
+    let mut renderer = Renderer::new(window.clone(), initial_glsl, log_path).await?;
     
-    // Camera State
+    let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
+    // MUST be non-blocking so the `while` loop can cleanly exit when the queue is empty
+    listener.set_nonblocking(true).expect("Cannot set non-blocking");
+    
     let mut yaw: f32 = 0.0;
     let mut pitch: f32 = 0.4;
     let mut dist: f32 = 20.0;
@@ -75,9 +75,8 @@ async fn run() -> Result<()> {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    match delta {
-                        MouseScrollDelta::LineDelta(_, y) => dist = (dist - y).clamp(2.0, 100.0),
-                        _ => {}
+                    if let MouseScrollDelta::LineDelta(_, y) = delta {
+                        dist = (dist - y).clamp(2.0, 100.0);
                     }
                 }
                 WindowEvent::RedrawRequested => {
@@ -87,26 +86,32 @@ async fn run() -> Result<()> {
                     if key_right { yaw += 0.05; }
                     pitch = pitch.clamp(-1.5, 1.5);
 
-                    // --- FIX: THROTTLED HOT RELOAD ---
-                    if let Ok(m) = std::fs::metadata(&glsl_path) {
-                        if let Ok(mod_time) = m.modified() {
-                            // Check if file changed AND at least 150ms have passed since our last try
-                            if mod_time > last_modified && last_reload_time.elapsed() > Duration::from_millis(30) {
-                                last_reload_time = Instant::now(); // Reset timer
-                                
-                                match renderer.reload_shader() {
-                                    Ok(_) => {
-                                        // Success! Update the modification tracker
-                                        last_modified = mod_time;
-                                        renderer.log_message("Shader compiled successfully.");
-                                    }
-                                    Err(e) => {
-                                        // Keep last_modified the same so it tries again in 150ms.
-                                        // Write the specific shader error to the log file!
-                                        renderer.log_message(&format!("Shader Error: {}", e));
-                                    }
-                                }
+                    // --- THE TCP BACKLOG DRAINER ---
+                    let mut got_new_shader = false;
+                    let mut latest_code = String::new();
+                    
+                    // This while loop pulls EVERY pending connection from the OS instantly
+                    while let Ok((mut stream, _)) = listener.accept() {
+                        // Make the individual stream blocking so we can read the whole message
+                        let _ = stream.set_nonblocking(false);
+                        // Add a strict timeout so a fragmented packet never freezes the window
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                        
+                        let mut buffer = String::new();
+                        if stream.read_to_string(&mut buffer).is_ok() {
+                            if buffer.contains("map(") {
+                                // Overwrite any previous code from this frame. We only care about the latest!
+                                latest_code = buffer;
+                                got_new_shader = true;
                             }
+                        }
+                    }
+                    
+                    // Only trigger the heavy GPU compiler ONCE per frame, even if 50 packets arrived
+                    if got_new_shader {
+                        match renderer.reload_shader(&latest_code) {
+                            Ok(_) => renderer.log_message("Shader updated via TCP socket!"),
+                            Err(e) => renderer.log_message(&format!("Shader Error: {}", e)),
                         }
                     }
                     
@@ -119,6 +124,7 @@ async fn run() -> Result<()> {
                 }
                 _ => {}
             },
+            // This is crucial: it tells winit to immediately request another redraw, keeping the game loop spinning
             Event::AboutToWait => { window.request_redraw(); }
             _ => {}
         }
@@ -127,6 +133,6 @@ async fn run() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    setup_panic_logger(); // Initialize the black box
+    setup_panic_logger();
     pollster::block_on(run())
 }

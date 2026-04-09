@@ -1,9 +1,12 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 module AppCore where
 
 import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectoryIfMissing)
 import System.FilePath ((</>))
 import Data.List (nub)
 import qualified Data.List.NonEmpty as NE
+import Control.Exception (catch, SomeException)
+import Control.Concurrent (forkIO) -- FIX: Allows background threads!
 
 import Text.Megaparsec
 import Text.Megaparsec.Pos (sourceLine, unPos) 
@@ -14,16 +17,16 @@ import Evaluator
 
 import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, StdStream(CreatePipe), terminateProcess)
 
+import Network.Socket
+import Network.Socket.ByteString (sendAll)
+import qualified Data.ByteString.Char8 as C8
+
 launchViewer :: IO ProcessHandle
 launchViewer = do
-    -- Using 'proc' and 'createProcess' lets us capture stdout and stderr
-    -- 'CreatePipe' swallows the output so it doesn't corrupt the Brick TUI
     let processConfig = (proc "IronSmith-Viewer.exe" []) 
             { std_out = CreatePipe
             , std_err = CreatePipe 
             }
-    
-    -- We ignore the stdin/stdout/stderr handles returned, we just want the ProcessHandle
     (_, _, _, handle) <- createProcess processConfig
     return handle
 
@@ -32,21 +35,17 @@ stopViewer Nothing = return ()
 stopViewer (Just h) = terminateProcess h
 
 -- | PERSISTENCE HELPERS
-
--- 1. Grab the global OS folder and make sure it exists
 getConfigDir :: IO FilePath
 getConfigDir = do
     configDir <- getAppUserDataDirectory "ironsmith"
     createDirectoryIfMissing True configDir 
     return configDir
 
--- 2. Path for the recent files cache
 getCachePath :: IO FilePath
 getCachePath = do
     dir <- getConfigDir
     return (dir </> ".ironsmith_recents")
 
--- 3. Path for the hidden GLSL output
 getGlslPath :: IO FilePath
 getGlslPath = do
     dir <- getConfigDir
@@ -67,9 +66,25 @@ saveRecent path oldRecents = do
     writeFile cachePath (unlines newRecents)
     return newRecents
 
+-- | SEND GLSL OVER TCP (Asynchronous!)
+sendToViewer :: String -> IO ()
+sendToViewer glsl = do
+    -- FIX: forkIO spawns this on a background thread so the TUI never stutters!
+    _ <- forkIO $ withSocketsDo $ do
+        catch (do
+            -- Pre-define hints to avoid slow DNS lookups on Windows
+            let hints = defaultHints { addrFamily = AF_INET, addrSocketType = Stream }
+            addr <- head <$> getAddrInfo (Just hints) (Just "127.0.0.1") (Just "7878")
+            sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+            connect sock (addrAddress addr)
+            sendAll sock (C8.pack glsl)
+            close sock
+            ) (\(e :: SomeException) -> return ())
+    return ()
+
 -- | COMPILER BRIDGE
-compileAndSave :: String -> IO (Maybe (String, Int))
-compileAndSave code =
+compileAndSave :: Bool -> String -> IO (Maybe (String, Int))
+compileAndSave isHardSave code =
     case parse pScript "editor" code of
         Left bundle -> do
             let errStr = errorBundlePretty bundle
@@ -82,8 +97,13 @@ compileAndSave code =
         Right astScript -> do
             let glslData = compileToGLSL astScript
             
-            -- FIX: Save the GLSL to the hidden global config folder instead of CWD!
-            glslPath <- getGlslPath
-            writeFile glslPath glslData
+            -- Beam instantly to RAM (Now running in the background)
+            sendToViewer glslData
+            
+            if isHardSave 
+                then do
+                    glslPath <- getGlslPath
+                    writeFile glslPath glslData
+                else return ()
             
             return Nothing

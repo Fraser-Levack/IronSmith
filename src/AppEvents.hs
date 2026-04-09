@@ -43,7 +43,8 @@ handleSplash (VtyEvent (V.EvKey (V.KChar c) []))
             exists <- liftIO $ doesFileExist path
             when exists $ do
                 content <- liftIO $ readFile path
-                _ <- liftIO $ compileAndSave content
+                -- True: Hard save on open
+                _ <- liftIO $ compileAndSave True content
                 newRecents <- liftIO $ saveRecent path recents
                 put (st { _mode = Editing
                         , _currentFile = Just path
@@ -56,11 +57,10 @@ handleSplash _ = return ()
 -- | 2. EDITING SCREEN
 handleEditing :: BrickEvent Name e -> EventM Name AppState ()
 handleEditing (VtyEvent (V.EvKey V.KEsc [])) = do
-    -- Intercept Escape key to check for unsaved changes
     st <- get
     if _isDirty st 
-        then put (st { _mode = UnsavedPrompt }) -- Prompt if unsaved
-        else put (st { _mode = Splash })        -- Go straight to splash if clean
+        then put (st { _mode = UnsavedPrompt })
+        else put (st { _mode = Splash })
 
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
@@ -72,7 +72,8 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            newErr <- liftIO $ compileAndSave code 
+            -- True: Hard save creates output.glsl
+            newErr <- liftIO $ compileAndSave True code 
             newRecents <- liftIO $ saveRecent path (_recentFiles st) 
             let newStatus = case newErr of
                     Nothing -> Saved
@@ -82,7 +83,6 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
             put (st { _mode = SaveDialog })
 
 handleEditing ev = do
-    -- Compare text before and after the event to see if they actually typed
     st <- get 
     let oldText = E.getEditContents (_editor st)
     
@@ -93,42 +93,38 @@ handleEditing ev = do
     
     if oldText /= newText
         then do
-            -- Text changed! Compile and mark as dirty.
-            newErr <- liftIO $ compileAndSave (unlines newText)
+            -- False: Soft save for instant rendering (RAM only)
+            newErr <- liftIO $ compileAndSave False (unlines newText)
             let newStatus = case newErr of
                     Nothing -> Normal
                     Just (e, lineNum) -> ErrorMsg e lineNum
             put (st' { _status = newStatus, _isDirty = True })
         else 
-            -- Text didn't change (e.g. they just pressed arrow keys)
             put st'
 
 
 -- | 3. UNSAVED CHANGES PROMPT
 handleUnsavedPrompt :: BrickEvent Name e -> EventM Name AppState ()
 handleUnsavedPrompt (VtyEvent (V.EvKey V.KEsc [])) = do
-    -- Cancel exit, go back to code
     st <- get
     put (st { _mode = Editing })
 
 handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
-    -- Discard and Return to Splash
     st <- get
     put (st { _mode = Splash, _isDirty = False })
 handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'N') [])) = handleUnsavedPrompt (VtyEvent (V.EvKey (V.KChar 'n') []))
 
 handleUnsavedPrompt (VtyEvent (V.EvKey V.KEnter [])) = do
-    -- Save and Return to Splash
     st <- get
     case _currentFile st of
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            _ <- liftIO $ compileAndSave code
+            -- True: Hard save
+            _ <- liftIO $ compileAndSave True code
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
             put (st { _mode = Splash, _isDirty = False, _recentFiles = newRecents })
         Nothing ->
-            -- If it's a new file, we have to ask for a name first
             put (st { _mode = SaveDialog })
 handleUnsavedPrompt _ = return ()
 
@@ -148,7 +144,8 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
         code = unlines $ E.getEditContents (_editor st)
     
     liftIO $ writeFile filename code
-    newErr <- liftIO $ compileAndSave code
+    -- True: Hard save
+    newErr <- liftIO $ compileAndSave True code
     newRecents <- liftIO $ saveRecent filename (_recentFiles st) 
     
     let newStatus = case newErr of
@@ -160,7 +157,7 @@ handleSaveDialog (VtyEvent (V.EvKey V.KEnter [])) = do
             , _saveInput = E.editor SaveEditor (Just 1) ""
             , _status = newStatus
             , _recentFiles = newRecents
-            , _isDirty = False -- Clean!
+            , _isDirty = False
             })
 
 handleSaveDialog ev = do
@@ -184,14 +181,15 @@ handleOpenDialog (VtyEvent (V.EvKey V.KEnter [])) = do
     if exists
         then do
             content <- liftIO $ readFile path
-            _ <- liftIO $ compileAndSave content
+            -- True: Hard save on open
+            _ <- liftIO $ compileAndSave True content
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
             put (st { _mode = Editing
                     , _currentFile = Just path
                     , _editor = E.editor CodeEditor Nothing content
                     , _status = Normal
                     , _recentFiles = newRecents
-                    , _isDirty = False -- Clean!
+                    , _isDirty = False
                     })
         else do
             put (st { _status = ErrorMsg "File not found!" 0 })

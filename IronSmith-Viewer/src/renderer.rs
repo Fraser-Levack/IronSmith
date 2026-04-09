@@ -28,11 +28,11 @@ pub struct Renderer<'a> {
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
-    glsl_path: PathBuf,
+    log_path: PathBuf, 
 }
 
 impl<'a> Renderer<'a> {
-    pub async fn new(window: Arc<Window>, glsl_path: PathBuf) -> Result<Self> {
+    pub async fn new(window: Arc<Window>, initial_glsl: String, log_path: PathBuf) -> Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -104,8 +104,7 @@ impl<'a> Renderer<'a> {
             push_constant_ranges: &[],
         });
 
-        let haskell_code = std::fs::read_to_string(&glsl_path).ok();
-        let render_pipeline = match Self::create_pipeline_internal(&device, &pipeline_layout, config.format, haskell_code) {
+        let render_pipeline = match Self::create_pipeline_internal(&device, &pipeline_layout, config.format, Some(initial_glsl)) {
             Ok(pipeline) => pipeline,
             Err(_) => {
                 Self::create_pipeline_internal(&device, &pipeline_layout, config.format, None)?
@@ -115,13 +114,12 @@ impl<'a> Renderer<'a> {
         Ok(Self {
             surface, device, queue, config, size,
             render_pipeline, pipeline_layout, uniform_buffer,
-            bind_group, uniforms, start_time: Instant::now(), glsl_path,
+            bind_group, uniforms, start_time: Instant::now(), log_path,
         })
     }
 
     pub fn log_message(&self, msg: &str) {
-        let log_path = self.glsl_path.with_file_name("forge.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.log_path) {
             let _ = writeln!(file, "{}", msg);
         }
     }
@@ -206,8 +204,6 @@ impl<'a> Renderer<'a> {
             ")),
         });
 
-        // --- FIX: THE PANIC FIREWALL RETURNED ---
-        // wgpu's GLSL parser still panics on severe syntax errors, ignoring the error scope.
         let fs_module_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("IronSmith Fragment"),
@@ -253,17 +249,8 @@ impl<'a> Renderer<'a> {
         Ok(pipeline)
     }
 
-    pub fn reload_shader(&mut self) -> Result<()> {
-        let haskell_code = std::fs::read_to_string(&self.glsl_path)
-            .context("File locked or unreadable")?;
-            
-        // --- FIX: THE RACE CONDITION SHIELD ---
-        // Do not attempt to compile if Haskell has truncated the file but hasn't written to it yet!
-        if haskell_code.trim().is_empty() || !haskell_code.contains("map(") {
-            return Err(anyhow::anyhow!("File is mid-write (missing map function)"));
-        }
-            
-        match Self::create_pipeline_internal(&self.device, &self.pipeline_layout, self.config.format, Some(haskell_code)) {
+    pub fn reload_shader(&mut self, haskell_code: &str) -> Result<()> {
+        match Self::create_pipeline_internal(&self.device, &self.pipeline_layout, self.config.format, Some(haskell_code.to_string())) {
             Ok(new_pipeline) => {
                 self.render_pipeline = new_pipeline;
                 Ok(())

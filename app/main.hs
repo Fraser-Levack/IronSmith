@@ -41,14 +41,16 @@ main = do
         then do
             -- Load and compile the castle demo
             code <- readFile demoPath
-            _ <- compileAndSave code
+            -- FIX: Added 'True' for the initial load
+            _ <- compileAndSave True code
             return ()
         else do
             -- Safety fallback if demo.irsm is missing
-            _ <- compileAndSave "torus(4, 1, 32)"
+            -- FIX: Added 'True' for the initial load
+            _ <- compileAndSave True "torus(4, 1, 32)"
             return ()
     
-    -- 2. Launch the viewer (Piped so it doesn't break the TUI)
+    -- 2. Launch the viewer
     h <- launchViewer
     
     let initialState = AppState
