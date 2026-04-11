@@ -84,6 +84,8 @@ async fn run() -> Result<()> {
                         
                         let mut buffer = String::new();
                         if stream.read_to_string(&mut buffer).is_ok() {
+
+                            let movement_value = 0.2; // Adjust this for how much each command changes the target
                             
                             // Check if Haskell sent a Command or a Shader
                             if buffer.starts_with("CMD:") {
@@ -92,10 +94,12 @@ async fn run() -> Result<()> {
                                     "CMD:StaticMode" => auto_orbit = false,
                                     "CMD:FlyMode"    => auto_orbit = false, 
                                     // NEW: Modify targets, and bump the speed to 0.1 for responsiveness
-                                    "CMD:PITCH_UP"   => target_pitch += 0.1,
-                                    "CMD:PITCH_DOWN" => target_pitch -= 0.1,
-                                    "CMD:YAW_LEFT"   => target_yaw -= 0.1,
-                                    "CMD:YAW_RIGHT"  => target_yaw += 0.1,
+                                    "CMD:PITCH_UP"   => target_pitch += movement_value,
+                                    "CMD:PITCH_DOWN" => target_pitch -= movement_value,
+                                    "CMD:YAW_LEFT"   => target_yaw -= movement_value,
+                                    "CMD:YAW_RIGHT"  => target_yaw += movement_value,
+                                    "CMD:ZOOM_IN"    => target_dist = (target_dist - 2.0).clamp(2.0, 100.0),
+                                    "CMD:ZOOM_OUT"   => target_dist = (target_dist + 2.0).clamp(2.0, 100.0),
                                     _ => {}
                                 }
                             } else if buffer.contains("map(") {

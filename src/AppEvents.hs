@@ -106,6 +106,8 @@ handleEditing brickEv@(VtyEvent ev) | isMovementKey ev = do
                         V.EvKey (V.KChar 'a') [] -> "CMD:YAW_LEFT"
                         V.EvKey V.KRight []      -> "CMD:YAW_RIGHT"
                         V.EvKey (V.KChar 'd') [] -> "CMD:YAW_RIGHT"
+                        V.EvKey (V.KChar 'z') [] -> "CMD:ZOOM_IN"
+                        V.EvKey (V.KChar 'x') [] -> "CMD:ZOOM_OUT"
                         _                        -> ""
             liftIO $ sendToViewer cmd
             return () -- Consumes the event so it doesn't type into the editor
@@ -116,7 +118,7 @@ handleEditing brickEv@(VtyEvent ev) | isMovementKey ev = do
     isMovementKey (V.EvKey V.KDown []) = True
     isMovementKey (V.EvKey V.KLeft []) = True
     isMovementKey (V.EvKey V.KRight []) = True
-    isMovementKey (V.EvKey (V.KChar c) []) = c `elem` ['w', 'a', 's', 'd']
+    isMovementKey (V.EvKey (V.KChar c) []) = c `elem` ['w', 'a', 's', 'd', 'z', 'x']
     isMovementKey _ = False
 
 -- Catch-all for standard typing
