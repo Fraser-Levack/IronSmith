@@ -73,6 +73,11 @@ handleEditing (VtyEvent (V.EvKey (V.KChar 'e') [V.MCtrl])) = do
     liftIO $ sendToViewer ("CMD:" ++ show nextMode)
     put (st { _viewerMode = nextMode })
 
+handleEditing (VtyEvent (V.EvKey (V.KChar 'r') [V.MCtrl])) = do
+    liftIO $ sendToViewer "CMD:RESET_CAMERA"
+    -- No state changes needed, just fire and forget
+    return ()
+
 handleEditing (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })

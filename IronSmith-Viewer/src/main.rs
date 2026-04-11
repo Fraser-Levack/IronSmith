@@ -100,6 +100,11 @@ async fn run() -> Result<()> {
                                     "CMD:YAW_RIGHT"  => target_yaw += movement_value,
                                     "CMD:ZOOM_IN"    => target_dist = (target_dist - 2.0).clamp(2.0, 100.0),
                                     "CMD:ZOOM_OUT"   => target_dist = (target_dist + 2.0).clamp(2.0, 100.0),
+                                    "CMD:RESET_CAMERA" => {
+                                        target_yaw = 0.0;
+                                        target_pitch = 0.4;
+                                        target_dist = 20.0;
+                                    },
                                     _ => {}
                                 }
                             } else if buffer.contains("map(") {
