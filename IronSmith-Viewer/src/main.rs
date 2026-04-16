@@ -47,14 +47,23 @@ async fn run() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
     listener.set_nonblocking(true).expect("Cannot set non-blocking");
     
+    // -- Camera State --
     let mut yaw: f32 = 0.0;
     let mut pitch: f32 = 0.4;
     let mut dist: f32 = 20.0;
     
-    // NEW: Target variables for smooth interpolation
+    let mut pan_x: f32 = 0.0;
+    let mut pan_y: f32 = 0.0;
+    let mut pan_z: f32 = 0.0;
+
+    // -- Smoothing Targets --
     let mut target_yaw: f32 = yaw;
     let mut target_pitch: f32 = pitch;
     let mut target_dist: f32 = dist;
+    
+    let mut target_pan_x: f32 = pan_x;
+    let mut target_pan_y: f32 = pan_y;
+    let mut target_pan_z: f32 = pan_z;
     
     // Auto-orbit starts true to match the Haskell OrbitMode default
     let mut auto_orbit = true;
@@ -66,9 +75,9 @@ async fn run() -> Result<()> {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(ps) => renderer.resize(ps),
                 
+                // Keep scroll-wheel zooming as a nice backup to the keyboard
                 WindowEvent::MouseWheel { delta, .. } => {
                     if let MouseScrollDelta::LineDelta(_, y) = delta {
-                        // NEW: Modify the target, increase the multiplier slightly for better feel
                         target_dist = (target_dist - y * 2.0).clamp(2.0, 100.0);
                     }
                 }
@@ -84,8 +93,6 @@ async fn run() -> Result<()> {
                         
                         let mut buffer = String::new();
                         if stream.read_to_string(&mut buffer).is_ok() {
-
-                            let movement_value = 0.2; // Adjust this for how much each command changes the target
                             
                             // Check if Haskell sent a Command or a Shader
                             if buffer.starts_with("CMD:") {
@@ -93,17 +100,45 @@ async fn run() -> Result<()> {
                                     "CMD:OrbitMode"  => auto_orbit = true,
                                     "CMD:StaticMode" => auto_orbit = false,
                                     "CMD:FlyMode"    => auto_orbit = false, 
-                                    // NEW: Modify targets, and bump the speed to 0.1 for responsiveness
-                                    "CMD:PITCH_UP"   => target_pitch += movement_value,
-                                    "CMD:PITCH_DOWN" => target_pitch -= movement_value,
-                                    "CMD:YAW_LEFT"   => target_yaw -= movement_value,
-                                    "CMD:YAW_RIGHT"  => target_yaw += movement_value,
+                                    
+                                    // Rotation
+                                    "CMD:PITCH_UP"   => target_pitch += 0.1,
+                                    "CMD:PITCH_DOWN" => target_pitch -= 0.1,
+                                    "CMD:YAW_LEFT"   => target_yaw -= 0.1,
+                                    "CMD:YAW_RIGHT"  => target_yaw += 0.1,
+                                    
+                                    // Zoom
                                     "CMD:ZOOM_IN"    => target_dist = (target_dist - 2.0).clamp(2.0, 100.0),
                                     "CMD:ZOOM_OUT"   => target_dist = (target_dist + 2.0).clamp(2.0, 100.0),
+                                    
+                                    // Camera-Relative Panning
+                                    "CMD:PAN_FORWARD" => {
+                                        target_pan_x -= target_yaw.sin() * 1.0;
+                                        target_pan_z -= target_yaw.cos() * 1.0;
+                                    },
+                                    "CMD:PAN_BACKWARD" => {
+                                        target_pan_x += target_yaw.sin() * 1.0;
+                                        target_pan_z += target_yaw.cos() * 1.0;
+                                    },
+                                    "CMD:PAN_LEFT" => {
+                                        target_pan_x -= target_yaw.cos() * 1.0;
+                                        target_pan_z += target_yaw.sin() * 1.0;
+                                    },
+                                    "CMD:PAN_RIGHT" => {
+                                        target_pan_x += target_yaw.cos() * 1.0;
+                                        target_pan_z -= target_yaw.sin() * 1.0;
+                                    },
+                                    "CMD:PAN_UP"   => target_pan_y += 1.0,
+                                    "CMD:PAN_DOWN" => target_pan_y -= 1.0,
+
+                                    // Reset everything to origin
                                     "CMD:RESET_CAMERA" => {
                                         target_yaw = 0.0;
                                         target_pitch = 0.4;
                                         target_dist = 20.0;
+                                        target_pan_x = 0.0;
+                                        target_pan_y = 0.0;
+                                        target_pan_z = 0.0;
                                     },
                                     _ => {}
                                 }
@@ -112,7 +147,7 @@ async fn run() -> Result<()> {
                                 got_new_shader = true;
                             }
                         }
-                    } // <-- End of the TCP while loop
+                    }
                     
                     if got_new_shader {
                         match renderer.reload_shader(&latest_code) {
@@ -121,22 +156,24 @@ async fn run() -> Result<()> {
                         }
                     }
                     
-                    // Drive the target continuously if Orbiting
+                    // Apply the automatic spin if we are in OrbitMode
                     if auto_orbit {
                         target_yaw -= 0.003; 
                     }
                     
-                    // Constrain the targets so we don't flip the camera upside down
+                    // Clamp pitch so we don't flip upside down
                     target_pitch = target_pitch.clamp(-1.5, 1.5);
                     
-                    let interpolation_f = 0.1; // Adjust this for more/less smoothing
-                    // NEW: The Smoothing Math (Linear Interpolation)
-                    // The '0.1' is the stiffness. Lower (e.g., 0.05) is floatier, Higher (e.g., 0.3) is snappier.
-                    yaw += (target_yaw - yaw) * interpolation_f;
-                    pitch += (target_pitch - pitch) * interpolation_f;
-                    dist += (target_dist - dist) * interpolation_f;
+                    // --- THE LERP MATH (Smoothing) ---
+                    yaw += (target_yaw - yaw) * 0.1;
+                    pitch += (target_pitch - pitch) * 0.1;
+                    dist += (target_dist - dist) * 0.1;
                     
-                    renderer.update(yaw, pitch, dist);
+                    pan_x += (target_pan_x - pan_x) * 0.1;
+                    pan_y += (target_pan_y - pan_y) * 0.1;
+                    pan_z += (target_pan_z - pan_z) * 0.1;
+                    
+                    renderer.update(yaw, pitch, dist, pan_x, pan_y, pan_z);
                     match renderer.render() {
                         Ok(_) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => renderer.resize(renderer.size),

@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use std::io::Write; 
 
+// --- 1. MEMORY LAYOUT ---
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderUniforms {
@@ -14,6 +15,7 @@ pub struct ShaderUniforms {
     pub camera_dist: f32,
     pub rotation: [f32; 2], 
     pub padding: [f32; 2],
+    pub target_pos: [f32; 4], // NEW: 16-byte aligned array for vec4 panning
 }
 
 pub struct Renderer<'a> {
@@ -67,6 +69,7 @@ impl<'a> Renderer<'a> {
             camera_dist: 20.0,
             rotation: [0.4, 0.0],
             padding: [0.0, 0.0],
+            target_pos: [0.0, 0.0, 0.0, 0.0], // Initialized at origin
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -124,6 +127,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    // --- 2. GLSL SHADER GENERATION ---
     fn create_pipeline_internal(
         device: &wgpu::Device, 
         layout: &wgpu::PipelineLayout, 
@@ -143,6 +147,7 @@ impl<'a> Renderer<'a> {
                 float u_camera_dist;
                 vec2 u_rotation; 
                 vec2 _padding; 
+                vec4 u_target_pos; // NEW: Receives the pan coordinates
             }};
             layout(location = 0) out vec4 out_color;
 
@@ -164,11 +169,12 @@ impl<'a> Renderer<'a> {
                 float p_angle = u_rotation.x; 
                 float y_angle = u_rotation.y;
 
-                vec3 ro = vec3(u_camera_dist * cos(p_angle) * sin(y_angle),
-                               u_camera_dist * sin(p_angle),
-                               u_camera_dist * cos(p_angle) * cos(y_angle));
+                // NEW: Calculate camera origin relative to the new target position
+                vec3 target_pos = u_target_pos.xyz;
+                vec3 ro = target_pos + vec3(u_camera_dist * cos(p_angle) * sin(y_angle),
+                                            u_camera_dist * sin(p_angle),
+                                            u_camera_dist * cos(p_angle) * cos(y_angle));
                 
-                vec3 target_pos = vec3(0.0, 0.0, 0.0);
                 vec3 ww = normalize(target_pos - ro);
                 vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
                 vec3 vv = normalize(cross(uu, ww));
@@ -268,11 +274,13 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    pub fn update(&mut self, yaw: f32, pitch: f32, dist: f32) {
+    // --- 3. UNIFORM UPDATE ---
+    pub fn update(&mut self, yaw: f32, pitch: f32, dist: f32, pan_x: f32, pan_y: f32, pan_z: f32) {
         self.uniforms.time = self.start_time.elapsed().as_secs_f32();
         self.uniforms.resolution = [self.size.width as f32, self.size.height as f32];
         self.uniforms.camera_dist = dist;
         self.uniforms.rotation = [pitch, yaw];
+        self.uniforms.target_pos = [pan_x, pan_y, pan_z, 0.0]; // Update the target pos on the GPU
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
     }
 

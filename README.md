@@ -87,11 +87,12 @@ difference(
 
 [x] Panic-free GPU fallback shaders
 
+[x] Free-flight camera controls
+
 [ ] Material and color parsing
 
 [ ] Exporting generated SDFs to .obj or .stl meshes
 
-[ ] Free-flight camera controls
 
 ## 🤝 Contributing
 
@@ -110,7 +111,7 @@ IronSmith is an open-source forge, and contributions of any size are highly appr
 * **Graphics (Rust):** Implementing material and color parsing in the GLSL generation.
 * **Language (Haskell):** Adding variables, looping constructs, or new primitives to the `.irsm` language.
 * **Tooling:** Exporting evaluated SDFs to standard 3D formats (`.obj` or `.stl`).
-* **Quality of Life:** Expanding the Rust viewer to include free-flight camera controls.
+* **Quality of Life:** Expanding the Rust viewer to include more controls.
 
 ### Development Guidelines
 * **Haskell:** Please ensure your code compiles cleanly. Running your code through standard linters like `hlint` is highly encouraged.
