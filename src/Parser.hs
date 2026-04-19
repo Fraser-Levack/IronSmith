@@ -197,6 +197,27 @@ pIntersection = pBinaryCSG "intersection" Intersection
 pDifference :: Parser Shape
 pDifference = pBinaryCSG "difference" Difference
 
+pHexColor :: Parser String
+pHexColor = lexeme $ do
+    _ <- char '#'
+    digits <- count 6 hexDigitChar
+    return ('#' : digits)
+
+pPresetColor :: Parser String
+pPresetColor = lexeme (choice (map symbol ["white", "black", "red", "blue", "green"]))
+
+pColor :: Parser String
+pColor = try pHexColor <|> pPresetColor
+
+pPaint :: Parser Shape
+pPaint = do
+    shapeKeyword "paint"
+    col <- pColor <?> "color (hex or preset)"
+    _ <- symbol "," <?> "comma"
+    shapes <- pShape `sepBy` symbol "," <?> "comma-separated shapes to paint"
+    _ <- symbol ")" <?> "closing ')' for paint"
+    return (Paint col shapes)
+
 pShapeRef :: Parser Shape
 pShapeRef = ShapeRef <$> identifier <?> "shape variable name"
 
@@ -215,6 +236,7 @@ pShape = pGroup <|>
          pCone <|>
          pTorus <|>
          pRepeat <|>
+         pPaint <|>
          pShapeRef
 
 -------------------------------------------------

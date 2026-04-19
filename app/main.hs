@@ -26,6 +26,7 @@ app = App
         , (attrName "transform", fg V.blue)
         , (attrName "number",    fg V.yellow)
         , (attrName "errorBg",   bg V.red)
+        , (attrName "colorHex", fg V.magenta `V.withStyle` V.bold)
         ]
     }
 

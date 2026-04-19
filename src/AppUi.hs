@@ -7,7 +7,7 @@ import Brick.Widgets.Border.Style
 import Brick.Widgets.Center (center, hCenter)
 import qualified Brick.Widgets.Edit as E
 import System.FilePath (takeFileName)
-import Data.Char (isAlpha, isAlphaNum, isDigit) -- Required for the Lexer
+import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit) -- Required for the Lexer
 
 import AppState
 
@@ -150,11 +150,13 @@ tokenize s@(c:cs)
     | isDigit c || (c == '-' && not (null cs) && isDigit (head cs)) = 
                   let (w, rest) = span (\x -> isDigit x || x == '.' || x == '-') s
                   in withAttr (attrName "number") (str w) : tokenize rest
+    | c == '#'  = let (w, rest) = span isHexDigit cs
+                  in withAttr (attrName "colorHex") (str ("#" ++ w)) : tokenize rest
     | otherwise = str [c] : tokenize cs
 
 colorKeyword :: String -> Widget Name
 colorKeyword w
     | w `elem` ["cube", "sphere", "cylinder", "cone", "torus"] = withAttr (attrName "shape") (str w)
     | w `elem` ["union", "difference", "intersection", "group"] = withAttr (attrName "csg") (str w)
-    | w `elem` ["move", "rotateX", "rotateY", "rotateZ"] = withAttr (attrName "transform") (str w)
+    | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint"] = withAttr (attrName "transform") (str w)
     | otherwise = str w

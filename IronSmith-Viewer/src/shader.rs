@@ -8,7 +8,7 @@ pub fn create_pipeline(
 ) -> Result<wgpu::RenderPipeline> {
     
     let final_map_logic = code_input.unwrap_or_else(|| {
-        "float map(vec3 p) { return length(p) - (1.5 + sin(u_time*3.0)*0.2); }".to_string()
+        "vec4 map(vec3 p) { return vec4(length(p) - (1.5 + sin(u_time*3.0)*0.2), 0.8, 0.4, 0.1); }".to_string()
     });
 
     let full_shader_source = format!(r#"
@@ -28,9 +28,9 @@ pub fn create_pipeline(
         vec3 calcNormal(vec3 p) {{
             vec2 e = vec2(0.001, 0.0);
             return normalize(vec3(
-                map(p + e.xyy) - map(p - e.xyy),
-                map(p + e.yxy) - map(p - e.yxy),
-                map(p + e.yyx) - map(p - e.yyx)
+                map(p + e.xyy).x - map(p - e.xyy).x,
+                map(p + e.yxy).x - map(p - e.yxy).x,
+                map(p + e.yyx).x - map(p - e.yyx).x
             ));
         }}
 
@@ -52,20 +52,30 @@ pub fn create_pipeline(
             vec3 rd = normalize(st.x * uu + st.y * vv + 1.5 * ww);
 
             float t = 0.0;
-            for(int i = 0; i < 100; i++) {{
-                float d = map(ro + rd * t);
-                if(d < 0.001 || t > 100.0) break;
-                t += d;
+            vec3 material_col = vec3(0.0);
+            bool hit = false; 
+
+            for(int i = 0; i < 256; i++) {{
+                vec4 res = map(ro + rd * t);
+                if(res.x < 0.001) {{
+                    material_col = res.yzw; 
+                    hit = true; 
+                    break;
+                }}
+                if(t > 100.0) break;
+                t += res.x;
             }}
 
             vec3 col = vec3(0.02, 0.02, 0.05);
-            if(t < 100.0) {{
+            
+            if(hit) {{
                 vec3 pos = ro + rd * t;
                 vec3 normal = calcNormal(pos);
                 float diff = max(dot(normal, normalize(vec3(1.0, 2.0, 1.0))), 0.0);
-                col = vec3(0.8, 0.4, 0.1) * diff + vec3(0.1);
+                col = material_col * diff + material_col * 0.1; 
             }}
-            out_color = vec4(pow(col, vec3(0.4545)), 1.0);
+            
+            out_color = vec4(pow(col, vec3(0.4545)), 1.0); 
         }}
     "#, code = final_map_logic);
 

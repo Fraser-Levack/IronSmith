@@ -25,6 +25,7 @@ data Shape
     | Difference Shape Shape
     | ShapeRef String
     | Repeat Expr Expr Expr Shape -- spacing in X, Y, Z, and the shape
+    | Paint String [Shape]
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith
