@@ -11,10 +11,10 @@ data Expr
 -- 2. Shapes now accept Expressions instead of raw Floats
 data Shape 
     = Cube Expr Expr Expr
-    | Cylinder Expr Expr Expr
-    | Cone Expr Expr Expr Expr  -- radius, top radius, definition, height
-    | Torus Expr Expr Expr  -- radius, tube radius, definition
-    | Sphere Expr Expr
+    | Cylinder Expr Expr
+    | Cone Expr Expr Expr  -- radius, top radius, definition, height
+    | Torus Expr Expr  -- radius, tube radius, definition
+    | Sphere Expr
     | Move Expr Expr Expr Shape
     | RotateX Expr Shape
     | RotateY Expr Shape
@@ -26,6 +26,7 @@ data Shape
     | ShapeRef String
     | Repeat Expr Expr Expr Shape -- spacing in X, Y, Z, and the shape
     | Paint String [Shape]
+    | Scale Expr Expr Expr Shape
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith

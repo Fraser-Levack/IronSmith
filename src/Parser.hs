@@ -78,43 +78,36 @@ pCylinder = do
     shapeKeyword "cylinder"
     r <- pExpr <?> "radius argument for cylinder"
     _ <- symbol "," <?> "comma"
-    d <- pExpr <?> "definition argument for cylinder"
-    _ <- symbol "," <?> "comma"
     h <- pExpr <?> "height argument for cylinder"
     _ <- symbol ")" <?> "closing ')' for cylinder"
-    return (Cylinder r d h)
+    return (Cylinder r h)
 
 pSphere :: Parser Shape
 pSphere = do
     shapeKeyword "sphere"
     r <- pExpr <?> "radius argument for sphere"
-    _ <- symbol "," <?> "comma"
-    d <- pExpr <?> "definition argument for sphere"
     _ <- symbol ")" <?> "closing ')' for sphere"
-    return (Sphere r d)
+    return (Sphere r)
 
 pCone :: Parser Shape
 pCone = do
     shapeKeyword "cone"
     r <- pExpr <?> "base radius for cone"
     _ <- symbol "," <?> "comma"
-    -- Handle both 3-arg and 4-arg versions cleanly
-    let parse4 = try $ do
+    
+    -- Updated to choose between (top_radius, height) or just (height)
+    let parse3 = try $ do
             tr <- pExpr <?> "top radius for cone"
             _ <- symbol "," <?> "comma"
-            d <- pExpr <?> "definition for cone"
-            _ <- symbol "," <?> "comma"
             h <- pExpr <?> "height for cone"
-            return (tr, d, h)
-        parse3 = do
-            d <- pExpr <?> "definition for cone"
-            _ <- symbol "," <?> "comma"
+            return (tr, h)
+        parse2 = do
             h <- pExpr <?> "height for cone"
-            return (Lit 0, d, h)
+            return (Lit 0, h)
             
-    (tr, d, h) <- parse4 <|> parse3
+    (tr, h) <- parse3 <|> parse2
     _ <- symbol ")" <?> "closing ')' for cone"
-    return (Cone r tr d h)
+    return (Cone r tr h)
 
 pTorus :: Parser Shape
 pTorus = do
@@ -122,10 +115,8 @@ pTorus = do
     r <- pExpr <?> "main radius for torus"
     _ <- symbol "," <?> "comma"
     tr <- pExpr <?> "tube radius for torus"
-    _ <- symbol "," <?> "comma"
-    d <- pExpr <?> "definition for torus"
     _ <- symbol ")" <?> "closing ')' for torus"
-    return (Torus r tr d)
+    return (Torus r tr)
 
 pMove :: Parser Shape
 pMove = do
@@ -171,6 +162,33 @@ pRotateY = pRotate "rotateY" RotateY
 
 pRotateZ :: Parser Shape
 pRotateZ = pRotate "rotateZ" RotateZ
+
+pScale :: Parser Shape
+pScale = do
+    shapeKeyword "scale"
+    
+    -- Try reading 3 arguments first (X, Y, Z)
+    let parse3 = try $ do
+            sx <- pExpr <?> "X scale factor"
+            _ <- symbol "," <?> "comma"
+            sy <- pExpr <?> "Y scale factor"
+            _ <- symbol "," <?> "comma"
+            sz <- pExpr <?> "Z scale factor"
+            _ <- symbol "," <?> "comma"
+            return (sx, sy, sz)
+            
+    -- If it fails, fall back to 1 uniform argument
+        parse1 = do
+            s <- pExpr <?> "uniform scale factor"
+            _ <- symbol "," <?> "comma"
+            return (s, s, s)
+
+    -- Choose the successful parser
+    (sx, sy, sz) <- parse3 <|> parse1
+    
+    innerShape <- pShape <?> "shape to scale"
+    _ <- symbol ")" <?> "closing ')' for scale"
+    return (Scale sx sy sz innerShape)
 
 pGroup :: Parser Shape
 pGroup = do
@@ -237,6 +255,7 @@ pShape = pGroup <|>
          pTorus <|>
          pRepeat <|>
          pPaint <|>
+         pScale <|>
          pShapeRef
 
 -------------------------------------------------

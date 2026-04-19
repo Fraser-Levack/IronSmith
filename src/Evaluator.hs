@@ -84,19 +84,19 @@ evalShape env col (Cube ex ey ez) pVar =
     let x = evalExpr env ex / 2.0; y = evalExpr env ey / 2.0; z = evalExpr env ez / 2.0
     in "vec4(sdBox(" ++ pVar ++ ", vec3(" ++ show x ++ ", " ++ show y ++ ", " ++ show z ++ ")), " ++ col ++ ")"
 
-evalShape env col (Sphere er _) pVar =
+evalShape env col (Sphere er) pVar =
     let r = evalExpr env er
     in "vec4(sdSphere(" ++ pVar ++ ", " ++ show r ++ "), " ++ col ++ ")"
 
-evalShape env col (Cylinder er _ eh) pVar =
+evalShape env col (Cylinder er eh) pVar =
     let r = evalExpr env er; h = evalExpr env eh / 2.0
     in "vec4(sdCylinder(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r ++ "), " ++ col ++ ")"
 
-evalShape env col (Cone er et _ eh) pVar =
+evalShape env col (Cone er et eh) pVar =
     let r1 = evalExpr env er; r2 = evalExpr env et; h = evalExpr env eh / 2.0
     in "vec4(sdCappedCone(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r1 ++ ", " ++ show r2 ++ "), " ++ col ++ ")"
 
-evalShape env col (Torus er et _) pVar =
+evalShape env col (Torus er et) pVar =
     let r = evalExpr env er; tr = evalExpr env et
     in "vec4(sdTorus(" ++ pVar ++ ", vec2(" ++ show r ++ ", " ++ show tr ++ ")), " ++ col ++ ")"
 
@@ -123,6 +123,13 @@ evalShape env col (RotateZ edeg innerShape) pVar =
         c = show (cos (-rad)); s = show (sin (-rad))
         newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env col innerShape newP
+
+evalShape env col (Scale ex ey ez innerShape) pVar =
+    let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
+        newP = "(" ++ pVar ++ " / vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
+        minScale = "min(" ++ sx ++ ", min(" ++ sy ++ ", " ++ sz ++ "))"
+        inner = evalShape env col innerShape newP
+    in "vec4((" ++ inner ++ ").x * " ++ minScale ++ ", (" ++ inner ++ ").yzw)"
 
 evalShape env col (Repeat ex ey ez innerShape) pVar =
     let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
