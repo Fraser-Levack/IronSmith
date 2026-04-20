@@ -26,6 +26,7 @@ data Shape
     | ShapeRef String
     | Repeat Expr Expr Expr Shape -- spacing in X, Y, Z, and the shape
     | Paint String [Shape]
+    | Material String [Shape]
     | Scale Expr Expr Expr Shape
     deriving (Show, Eq)
 

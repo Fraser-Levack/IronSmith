@@ -236,6 +236,18 @@ pPaint = do
     _ <- symbol ")" <?> "closing ')' for paint"
     return (Paint col shapes)
 
+pMaterialPreset :: Parser String
+pMaterialPreset = lexeme (choice (map symbol ["matte", "plastic", "neon", "metal"]))
+
+pMaterial :: Parser Shape
+pMaterial = do
+    shapeKeyword "material"
+    mat <- pMaterialPreset <?> "material preset (matte, plastic, neon, metal)"
+    _ <- symbol "," <?> "comma"
+    shapes <- pShape `sepBy` symbol "," <?> "comma-separated shapes for material"
+    _ <- symbol ")" <?> "closing ')' for material"
+    return (Material mat shapes)
+
 pShapeRef :: Parser Shape
 pShapeRef = ShapeRef <$> identifier <?> "shape variable name"
 
@@ -256,6 +268,7 @@ pShape = pGroup <|>
          pRepeat <|>
          pPaint <|>
          pScale <|>
+         pMaterial <|>
          pShapeRef
 
 -------------------------------------------------

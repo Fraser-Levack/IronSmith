@@ -50,110 +50,123 @@ resolveColor ('#':hexStr) | length hexStr == 6 =
     in show r ++ ", " ++ show g ++ ", " ++ show b
 resolveColor _ = "0.8, 0.4, 0.1" -- Default Forge Orange
 
--- Helper for multi-shape groupings (Groups and Paints)
+-- Resolves material presets to GLSL integer IDs
+resolveMaterial :: String -> String
+resolveMaterial "matte"   = "0"
+resolveMaterial "plastic" = "1"
+resolveMaterial "neon"    = "2"
+resolveMaterial "metal"   = "3"
+resolveMaterial _         = "0"
+
+-- Helper for multi-shape groupings (Groups, Paints, Materials)
 balancedOp :: String -> [String] -> String
-balancedOp _ [] = "vec4(999999.0, 0.0, 0.0, 0.0)"
+balancedOp _ [] = "Hit(999999.0, vec3(0.0), 0)"
 balancedOp _ [x] = x
 balancedOp op xs =
     let mid = length xs `div` 2
         (left, right) = splitAt mid xs
     in op ++ "(" ++ balancedOp op left ++ ", " ++ balancedOp op right ++ ")"
 
--- --- FIX: THE AST FLATTENER ---
--- This mathematically distributes combinations and transforms into a flat list!
 flattenShapes :: Shape -> [Shape]
-flattenShapes (Group shapes)   = concatMap flattenShapes shapes
-flattenShapes (Union a b)      = flattenShapes a ++ flattenShapes b
-flattenShapes (Move x y z s)   = map (Move x y z) (flattenShapes s)
-flattenShapes (RotateX d s)    = map (RotateX d) (flattenShapes s)
-flattenShapes (RotateY d s)    = map (RotateY d) (flattenShapes s)
-flattenShapes (RotateZ d s)    = map (RotateZ d) (flattenShapes s)
-flattenShapes (Repeat x y z s) = map (Repeat x y z) (flattenShapes s)
-flattenShapes (Paint c shapes) = map (\s -> Paint c [s]) (concatMap flattenShapes shapes)
-flattenShapes other            = [other] -- Differences, Intersections, and Primitives stop the flattening.
+flattenShapes (Group shapes)      = concatMap flattenShapes shapes
+flattenShapes (Union a b)         = flattenShapes a ++ flattenShapes b
+flattenShapes (Move x y z s)      = map (Move x y z) (flattenShapes s)
+flattenShapes (RotateX d s)       = map (RotateX d) (flattenShapes s)
+flattenShapes (RotateY d s)       = map (RotateY d) (flattenShapes s)
+flattenShapes (RotateZ d s)       = map (RotateZ d) (flattenShapes s)
+flattenShapes (Scale x y z s)     = map (Scale x y z) (flattenShapes s)
+flattenShapes (Repeat x y z s)    = map (Repeat x y z) (flattenShapes s)
+flattenShapes (Paint c shapes)    = map (\s -> Paint c [s]) (concatMap flattenShapes shapes) 
+flattenShapes (Material m shapes) = map (\s -> Material m [s]) (concatMap flattenShapes shapes) 
+flattenShapes other               = [other] 
 
-
-evalShape :: Env -> String -> Shape -> String -> String
-evalShape env _ (ShapeRef name) pVar =
+-- evalShape now threads BOTH color and material ID down the tree
+evalShape :: Env -> String -> String -> Shape -> String -> String
+evalShape env _ _ (ShapeRef name) pVar =
     case Map.lookup name env of
         Just (VFunc funcName) -> funcName ++ "(" ++ pVar ++ ")"
-        _ -> "vec4(999999.0, 0.0, 0.0, 0.0)" 
+        _ -> "Hit(999999.0, vec3(0.0), 0)" 
 
--- 1. PRIMITIVE SHAPES (Now wrapped in vec4)
-evalShape env col (Cube ex ey ez) pVar = 
+-- 1. PRIMITIVE SHAPES (Now generating Hit structs)
+evalShape env col mat (Cube ex ey ez) pVar = 
     let x = evalExpr env ex / 2.0; y = evalExpr env ey / 2.0; z = evalExpr env ez / 2.0
-    in "vec4(sdBox(" ++ pVar ++ ", vec3(" ++ show x ++ ", " ++ show y ++ ", " ++ show z ++ ")), " ++ col ++ ")"
+    in "Hit(sdBox(" ++ pVar ++ ", vec3(" ++ show x ++ ", " ++ show y ++ ", " ++ show z ++ ")), vec3(" ++ col ++ "), " ++ mat ++ ")"
 
-evalShape env col (Sphere er) pVar =
+evalShape env col mat (Sphere er) pVar =
     let r = evalExpr env er
-    in "vec4(sdSphere(" ++ pVar ++ ", " ++ show r ++ "), " ++ col ++ ")"
+    in "Hit(sdSphere(" ++ pVar ++ ", " ++ show r ++ "), vec3(" ++ col ++ "), " ++ mat ++ ")"
 
-evalShape env col (Cylinder er eh) pVar =
+evalShape env col mat (Cylinder er eh) pVar =
     let r = evalExpr env er; h = evalExpr env eh / 2.0
-    in "vec4(sdCylinder(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r ++ "), " ++ col ++ ")"
+    in "Hit(sdCylinder(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r ++ "), vec3(" ++ col ++ "), " ++ mat ++ ")"
 
-evalShape env col (Cone er et eh) pVar =
+evalShape env col mat (Cone er et eh) pVar =
     let r1 = evalExpr env er; r2 = evalExpr env et; h = evalExpr env eh / 2.0
-    in "vec4(sdCappedCone(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r1 ++ ", " ++ show r2 ++ "), " ++ col ++ ")"
+    in "Hit(sdCappedCone(" ++ pVar ++ ", " ++ show h ++ ", " ++ show r1 ++ ", " ++ show r2 ++ "), vec3(" ++ col ++ "), " ++ mat ++ ")"
 
-evalShape env col (Torus er et) pVar =
+evalShape env col mat (Torus er et) pVar =
     let r = evalExpr env er; tr = evalExpr env et
-    in "vec4(sdTorus(" ++ pVar ++ ", vec2(" ++ show r ++ ", " ++ show tr ++ ")), " ++ col ++ ")"
+    in "Hit(sdTorus(" ++ pVar ++ ", vec2(" ++ show r ++ ", " ++ show tr ++ ")), vec3(" ++ col ++ "), " ++ mat ++ ")"
 
--- 2. TRANSFORMATIONS & PAINT
-evalShape env col (Move ex ey ez innerShape) pVar =
+-- 2. TRANSFORMATIONS & MODIFIERS
+evalShape env col mat (Move ex ey ez innerShape) pVar =
     let mx = show (evalExpr env ex); my = show (evalExpr env ey); mz = show (evalExpr env ez)
         newP = "(" ++ pVar ++ " - vec3(" ++ mx ++ ", " ++ my ++ ", " ++ mz ++ "))"
-    in evalShape env col innerShape newP
+    in evalShape env col mat innerShape newP
 
-evalShape env col (RotateX edeg innerShape) pVar =
+evalShape env col mat (RotateX edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad)); s = show (sin (-rad))
         newP = "(mat3(1.0, 0.0, 0.0, 0.0, " ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ") * " ++ pVar ++ ")"
-    in evalShape env col innerShape newP
+    in evalShape env col mat innerShape newP
 
-evalShape env col (RotateY edeg innerShape) pVar =
+evalShape env col mat (RotateY edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad)); s = show (sin (-rad))
         newP = "(mat3(" ++ c ++ ", 0.0, -(" ++ s ++ "), 0.0, 1.0, 0.0, " ++ s ++ ", 0.0, " ++ c ++ ") * " ++ pVar ++ ")"
-    in evalShape env col innerShape newP
+    in evalShape env col mat innerShape newP
 
-evalShape env col (RotateZ edeg innerShape) pVar =
+evalShape env col mat (RotateZ edeg innerShape) pVar =
     let rad = degToRad (evalExpr env edeg)
         c = show (cos (-rad)); s = show (sin (-rad))
         newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
-    in evalShape env col innerShape newP
+    in evalShape env col mat innerShape newP
 
-evalShape env col (Scale ex ey ez innerShape) pVar =
+evalShape env col mat (Scale ex ey ez innerShape) pVar =
     let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
         newP = "(" ++ pVar ++ " / vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
         minScale = "min(" ++ sx ++ ", min(" ++ sy ++ ", " ++ sz ++ "))"
-        inner = evalShape env col innerShape newP
-    in "vec4((" ++ inner ++ ").x * " ++ minScale ++ ", (" ++ inner ++ ").yzw)"
+        inner = evalShape env col mat innerShape newP
+    in "Hit((" ++ inner ++ ").d * " ++ minScale ++ ", (" ++ inner ++ ").col, (" ++ inner ++ ").mat)"
 
-evalShape env col (Repeat ex ey ez innerShape) pVar =
+evalShape env col mat (Repeat ex ey ez innerShape) pVar =
     let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
         newP = "opRep(" ++ pVar ++ ", vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
-    in evalShape env col innerShape newP
+    in evalShape env col mat innerShape newP
 
-evalShape env _ (Paint colorName shapes) pVar =
+evalShape env _ mat (Paint colorName shapes) pVar =
     let newCol = resolveColor colorName
-    in if null shapes then "vec4(999999.0, 0.0, 0.0, 0.0)"
-       else balancedOp "opU" (map (\s -> evalShape env newCol s pVar) shapes)
+    in if null shapes then "Hit(999999.0, vec3(0.0), 0)"
+       else balancedOp "opU" (map (\s -> evalShape env newCol mat s pVar) shapes)
+
+evalShape env col _ (Material matName shapes) pVar =
+    let newMat = resolveMaterial matName
+    in if null shapes then "Hit(999999.0, vec3(0.0), 0)"
+       else balancedOp "opU" (map (\s -> evalShape env col newMat s pVar) shapes)
 
 -- 3. CONSTRUCTIVE SOLID GEOMETRY (CSG)
-evalShape env col (Group shapes) pVar =
-    if null shapes then "vec4(999999.0, 0.0, 0.0, 0.0)"
-    else balancedOp "opU" (map (\s -> evalShape env col s pVar) shapes)
+evalShape env col mat (Group shapes) pVar =
+    if null shapes then "Hit(999999.0, vec3(0.0), 0)"
+    else balancedOp "opU" (map (\s -> evalShape env col mat s pVar) shapes)
 
-evalShape env col (Union a b) pVar =
-    "opU(" ++ evalShape env col a pVar ++ ", " ++ evalShape env col b pVar ++ ")"
+evalShape env col mat (Union a b) pVar =
+    "opU(" ++ evalShape env col mat a pVar ++ ", " ++ evalShape env col mat b pVar ++ ")"
 
-evalShape env col (Intersection a b) pVar =
-    "opI(" ++ evalShape env col a pVar ++ ", " ++ evalShape env col b pVar ++ ")"
+evalShape env col mat (Intersection a b) pVar =
+    "opI(" ++ evalShape env col mat a pVar ++ ", " ++ evalShape env col mat b pVar ++ ")"
 
-evalShape env col (Difference a b) pVar =
-    "opS(" ++ evalShape env col a pVar ++ ", " ++ evalShape env col b pVar ++ ")"
+evalShape env col mat (Difference a b) pVar =
+    "opS(" ++ evalShape env col mat a pVar ++ ", " ++ evalShape env col mat b pVar ++ ")"
 
 
 -- 4. SCRIPT RUNNER
@@ -169,14 +182,14 @@ runScript env (stmt:rest) = case stmt of
         let flatShapes = flattenShapes shape
             funcName = "shape_" ++ name
             funcBody = if null flatShapes 
-                       then "    return vec4(999999.0, 0.0, 0.0, 0.0);\n"
+                       then "    return Hit(999999.0, vec3(0.0), 0);\n"
                        else if length flatShapes == 1
-                       then "    return " ++ evalShape env "0.8, 0.4, 0.1" (head flatShapes) "p" ++ ";\n"
-                       else "    vec4 d = vec4(999999.0, 0.0, 0.0, 0.0);\n" ++
-                            unlines (map (\s -> "    d = opU(d, " ++ evalShape env "0.8, 0.4, 0.1" s "p" ++ ");") flatShapes) ++
+                       then "    return " ++ evalShape env "0.8, 0.4, 0.1" "0" (head flatShapes) "p" ++ ";\n"
+                       else "    Hit d = Hit(999999.0, vec3(0.0), 0);\n" ++
+                            unlines (map (\s -> "    d = opU(d, " ++ evalShape env "0.8, 0.4, 0.1" "0" s "p" ++ ");") flatShapes) ++
                             "    return d;\n"
                             
-            funcDef = "vec4 " ++ funcName ++ "(vec3 p) {\n" ++ funcBody ++ "}"
+            funcDef = "Hit " ++ funcName ++ "(vec3 p) {\n" ++ funcBody ++ "}"
             newEnv = Map.insert name (VFunc funcName) env 
             
             (funcs, draws) = runScript newEnv rest
@@ -184,7 +197,7 @@ runScript env (stmt:rest) = case stmt of
         
     Draw shape -> 
         let flatShapes = flattenShapes shape
-            sdfStrs = map (\s -> evalShape env "0.8, 0.4, 0.1" s "p") flatShapes
+            sdfStrs = map (\s -> evalShape env "0.8, 0.4, 0.1" "0" s "p") flatShapes
             (funcs, draws) = runScript env rest
         in (funcs, sdfStrs ++ draws)
 
@@ -196,20 +209,21 @@ compileToGLSL script =
         functionsStr = unlines funcs
         
         mapBody = if null draws 
-                  then "    return vec4(999999.0, 0.0, 0.0, 0.0);\n"
+                  then "    return Hit(999999.0, vec3(0.0), 0);\n"
                   else if length draws == 1
                   then "    return " ++ head draws ++ ";\n"
-                  else "    vec4 d = vec4(999999.0, 0.0, 0.0, 0.0);\n" ++
+                  else "    Hit d = Hit(999999.0, vec3(0.0), 0);\n" ++
                        unlines (map (\drawCall -> "    d = opU(d, " ++ drawCall ++ ");") draws) ++
                        "    return d;\n"
                        
-    in glslPrimitives ++ "\n" ++ functionsStr ++ "\nvec4 map(vec3 p) {\n" ++ mapBody ++ "}\n"
+    in glslPrimitives ++ "\n" ++ functionsStr ++ "\nHit map(vec3 p) {\n" ++ mapBody ++ "}\n"
 
 glslPrimitives :: String
 glslPrimitives = unlines [
-    "vec4 opU(vec4 d1, vec4 d2) { return (d1.x < d2.x) ? d1 : d2; }",
-    "vec4 opS(vec4 d1, vec4 d2) { return (d1.x > -d2.x) ? d1 : vec4(-d2.x, d1.yzw); }",
-    "vec4 opI(vec4 d1, vec4 d2) { return (d1.x > d2.x) ? d1 : d2; }",
+    "struct Hit { float d; vec3 col; int mat; };",
+    "Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }",
+    "Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }",
+    "Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }",
     "float sdSphere(vec3 p, float s) { return length(p)-s; }",
     "float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }",
     "float sdCylinder(vec3 p, float h, float r) { vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h); return min(max(d.x,d.y),0.0) + length(max(d,0.0)); }",

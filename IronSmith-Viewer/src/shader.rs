@@ -7,8 +7,9 @@ pub fn create_pipeline(
     code_input: Option<String>
 ) -> Result<wgpu::RenderPipeline> {
     
+    // Updated fallback string to include the Hit struct so Rust can compile without Haskell
     let final_map_logic = code_input.unwrap_or_else(|| {
-        "vec4 map(vec3 p) { return vec4(length(p) - (1.5 + sin(u_time*3.0)*0.2), 0.8, 0.4, 0.1); }".to_string()
+        "struct Hit { float d; vec3 col; int mat; };\nHit map(vec3 p) { return Hit(length(p) - (1.5 + sin(u_time*3.0)*0.2), vec3(0.8, 0.4, 0.1), 0); }".to_string()
     });
 
     let full_shader_source = format!(r#"
@@ -28,9 +29,9 @@ pub fn create_pipeline(
         vec3 calcNormal(vec3 p) {{
             vec2 e = vec2(0.001, 0.0);
             return normalize(vec3(
-                map(p + e.xyy).x - map(p - e.xyy).x,
-                map(p + e.yxy).x - map(p - e.yxy).x,
-                map(p + e.yyx).x - map(p - e.yyx).x
+                map(p + e.xyy).d - map(p - e.xyy).d,
+                map(p + e.yxy).d - map(p - e.yxy).d,
+                map(p + e.yyx).d - map(p - e.yyx).d
             ));
         }}
 
@@ -53,28 +54,87 @@ pub fn create_pipeline(
 
             float t = 0.0;
             vec3 material_col = vec3(0.0);
+            int material_id = 0;
             bool hit = false; 
 
+            // Primary Raymarch
             for(int i = 0; i < 256; i++) {{
-                vec4 res = map(ro + rd * t);
-                if(res.x < 0.001) {{
-                    material_col = res.yzw; 
+                Hit res = map(ro + rd * t);
+                if(res.d < 0.001) {{
+                    material_col = res.col; 
+                    material_id = res.mat;
                     hit = true; 
                     break;
                 }}
                 if(t > 100.0) break;
-                t += res.x;
+                t += res.d;
             }}
 
-            vec3 col = vec3(0.02, 0.02, 0.05);
+            vec3 bg_color = vec3(0.02, 0.02, 0.05);
+            vec3 col = bg_color;
+            vec3 light_dir = normalize(vec3(1.0, 2.0, 1.0));
             
             if(hit) {{
                 vec3 pos = ro + rd * t;
                 vec3 normal = calcNormal(pos);
-                float diff = max(dot(normal, normalize(vec3(1.0, 2.0, 1.0))), 0.0);
-                col = material_col * diff + material_col * 0.1; 
+                vec3 view_dir = normalize(ro - pos);
+                
+                if (material_id == 0) {{
+                    // 0 = MATTE (Standard Diffuse)
+                    float diff = max(dot(normal, light_dir), 0.0);
+                    col = material_col * diff + material_col * 0.1; 
+                }} 
+                else if (material_id == 1) {{
+                    // 1 = PLASTIC (Diffuse + Specular Highlight)
+                    float diff = max(dot(normal, light_dir), 0.0);
+                    vec3 half_dir = normalize(light_dir + view_dir);
+                    float spec = pow(max(dot(normal, half_dir), 0.0), 64.0);
+                    col = (material_col * diff) + (material_col * 0.1) + vec3(1.0) * spec;
+                }} 
+                else if (material_id == 2) {{
+                    // 2 = NEON (Pure Emissive, Over-brightened)
+                    col = material_col * 1.8; 
+                }}
+                else if (material_id == 3) {{
+                    // 3 = METAL (Ray bounce reflection)
+                    vec3 ref_rd = reflect(rd, normal);
+                    vec3 ref_ro = pos + normal * 0.01; // Step slightly off surface
+                    float ref_t = 0.0;
+                    bool ref_hit = false;
+                    vec3 ref_col = vec3(0.0);
+
+                    // Secondary Raymarch for reflection
+                    for(int i = 0; i < 100; i++) {{
+                        Hit ref_res = map(ref_ro + ref_rd * ref_t);
+                        if(ref_res.d < 0.001) {{
+                            ref_col = ref_res.col;
+                            ref_hit = true;
+                            break;
+                        }}
+                        if(ref_t > 50.0) break;
+                        ref_t += ref_res.d;
+                    }}
+
+                    // Apply reflection or sky background
+                    if (ref_hit) {{
+                        vec3 ref_pos = ref_ro + ref_rd * ref_t;
+                        vec3 ref_normal = calcNormal(ref_pos);
+                        float ref_diff = max(dot(ref_normal, light_dir), 0.0);
+                        vec3 shaded_ref = ref_col * ref_diff + ref_col * 0.1;
+                        col = mix(material_col * 0.2, shaded_ref, 0.8);
+                    }} else {{
+                        vec3 fake_sky = bg_color + max(ref_rd.y, 0.0) * 0.3;
+                        col = mix(material_col * 0.2, fake_sky, 0.8);
+                    }}
+
+                    // Add sharp specular ping to metal
+                    vec3 half_dir = normalize(light_dir + view_dir);
+                    float spec = pow(max(dot(normal, half_dir), 0.0), 128.0);
+                    col += vec3(1.0) * spec;
+                }}
             }}
             
+            // Gamma Correction
             out_color = vec4(pow(col, vec3(0.4545)), 1.0); 
         }}
     "#, code = final_map_logic);
