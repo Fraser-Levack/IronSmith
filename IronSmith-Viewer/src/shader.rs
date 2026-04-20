@@ -102,12 +102,14 @@ pub fn create_pipeline(
                     float ref_t = 0.0;
                     bool ref_hit = false;
                     vec3 ref_col = vec3(0.0);
+                    int ref_mat = 0; // NEW: Track the material of the reflected object!
 
                     // Secondary Raymarch for reflection
                     for(int i = 0; i < 100; i++) {{
                         Hit ref_res = map(ref_ro + ref_rd * ref_t);
                         if(ref_res.d < 0.001) {{
                             ref_col = ref_res.col;
+                            ref_mat = ref_res.mat; // Capture the material ID
                             ref_hit = true;
                             break;
                         }}
@@ -119,15 +121,39 @@ pub fn create_pipeline(
                     if (ref_hit) {{
                         vec3 ref_pos = ref_ro + ref_rd * ref_t;
                         vec3 ref_normal = calcNormal(ref_pos);
-                        float ref_diff = max(dot(ref_normal, light_dir), 0.0);
-                        vec3 shaded_ref = ref_col * ref_diff + ref_col * 0.1;
+                        vec3 ref_view_dir = normalize(ref_ro - ref_pos);
+                        vec3 shaded_ref = vec3(0.0);
+
+                        // NEW: Shade the reflection based on ITS specific material
+                        if (ref_mat == 0) {{
+                            // Reflecting Matte
+                            float ref_diff = max(dot(ref_normal, light_dir), 0.0);
+                            shaded_ref = ref_col * ref_diff + ref_col * 0.1;
+                        }} else if (ref_mat == 1) {{
+                            // Reflecting Plastic
+                            float ref_diff = max(dot(ref_normal, light_dir), 0.0);
+                            vec3 half_dir = normalize(light_dir + ref_view_dir);
+                            float spec = pow(max(dot(ref_normal, half_dir), 0.0), 64.0);
+                            shaded_ref = (ref_col * ref_diff) + (ref_col * 0.1) + vec3(1.0) * spec;
+                        }} else if (ref_mat == 2) {{
+                            // Reflecting Neon
+                            shaded_ref = ref_col * 1.8;
+                        }} else if (ref_mat == 3) {{
+                            // Reflecting Metal (Fake 2nd bounce to save GPU performance)
+                            vec3 fake_sky = bg_color + max(reflect(ref_rd, ref_normal).y, 0.0) * 0.3;
+                            vec3 half_dir = normalize(light_dir + ref_view_dir);
+                            float spec = pow(max(dot(ref_normal, half_dir), 0.0), 128.0);
+                            shaded_ref = mix(ref_col * 0.2, fake_sky, 0.8) + vec3(1.0) * spec;
+                        }}
+
                         col = mix(material_col * 0.2, shaded_ref, 0.8);
                     }} else {{
+                        // Hit nothing, reflect the sky
                         vec3 fake_sky = bg_color + max(ref_rd.y, 0.0) * 0.3;
                         col = mix(material_col * 0.2, fake_sky, 0.8);
                     }}
 
-                    // Add sharp specular ping to metal
+                    // Add sharp specular ping to the primary metal surface itself
                     vec3 half_dir = normalize(light_dir + view_dir);
                     float spec = pow(max(dot(normal, half_dir), 0.0), 128.0);
                     col += vec3(1.0) * spec;
