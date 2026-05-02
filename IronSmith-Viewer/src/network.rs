@@ -14,7 +14,7 @@ pub fn drain_sockets(listener: &TcpListener) -> Vec<NetMessage> {
         // We set blocking to true with a tiny timeout so `read_to_end` safely 
         // grabs the entire payload sent by Haskell before closing.
         let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(1)));
         
         let mut buffer = Vec::new();
         let _ = stream.read_to_end(&mut buffer);

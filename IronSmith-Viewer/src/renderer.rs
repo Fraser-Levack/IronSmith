@@ -88,11 +88,17 @@ impl<'a> Renderer<'a> {
             0.0                                 // OP_HALT
         ];
 
-        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // FIX: Create a massive 64KB buffer (holds ~16,000 float instructions)
+        let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Scene SSBO"),
-            contents: bytemuck::cast_slice(scene_instructions),
+            size: 65536, // 64 KB
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+
+        // Write a single OP_HALT (0.0) float to it immediately so the GPU doesn't crash 
+        // trying to read empty garbage memory before Haskell connects!
+        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[0.0f32]));
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
