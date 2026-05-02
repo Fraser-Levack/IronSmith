@@ -67,7 +67,9 @@ pub fn create_pipeline(
                     break;
                 }}
                 if(t > 100.0) break;
-                t += res.d;
+                
+                // NEW: Force a minimum step size to punch through CSG friction!
+                t += max(res.d, 0.005); 
             }}
 
             vec3 bg_color = vec3(0.02, 0.02, 0.05);

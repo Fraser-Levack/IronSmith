@@ -132,12 +132,12 @@ evalShape env col mat (RotateZ edeg innerShape) pVar =
         newP = "(mat3(" ++ c ++ ", " ++ s ++ ", 0.0, -(" ++ s ++ "), " ++ c ++ ", 0.0, 0.0, 0.0, 1.0) * " ++ pVar ++ ")"
     in evalShape env col mat innerShape newP
 
-evalShape env col mat (Scale ex ey ez innerShape) pVar =
+evalShape env col mat (Scale ex ey ez innerShape) pVar = 
     let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
         newP = "(" ++ pVar ++ " / vec3(" ++ sx ++ ", " ++ sy ++ ", " ++ sz ++ "))"
         minScale = "min(" ++ sx ++ ", min(" ++ sy ++ ", " ++ sz ++ "))"
         inner = evalShape env col mat innerShape newP
-    in "Hit((" ++ inner ++ ").d * " ++ minScale ++ ", (" ++ inner ++ ").col, (" ++ inner ++ ").mat)"
+    in "opScale(" ++ inner ++ ", " ++ minScale ++ ")"
 
 evalShape env col mat (Repeat ex ey ez innerShape) pVar =
     let sx = show (evalExpr env ex); sy = show (evalExpr env ey); sz = show (evalExpr env ez)
@@ -178,31 +178,25 @@ runScript env (stmt:rest) = case stmt of
             newEnv = Map.insert name (VNum val) env 
         in runScript newEnv rest 
         
+    -- NEW: No more flattening! Just evaluate the single AST Shape directly
     AssignShape name shape -> 
-        let flatShapes = flattenShapes shape
-            funcName = "shape_" ++ name
-            funcBody = if null flatShapes 
-                       then "    return Hit(999999.0, vec3(0.0), 0);\n"
-                       else if length flatShapes == 1
-                       then "    return " ++ evalShape env "0.8, 0.4, 0.1" "0" (head flatShapes) "p" ++ ";\n"
-                       else "    Hit d = Hit(999999.0, vec3(0.0), 0);\n" ++
-                            unlines (map (\s -> "    d = opU(d, " ++ evalShape env "0.8, 0.4, 0.1" "0" s "p" ++ ");") flatShapes) ++
-                            "    return d;\n"
-                            
+        let funcName = "shape_" ++ name
+            funcBody = "    return " ++ evalShape env "0.8, 0.4, 0.1" "0" shape "p" ++ ";\n"
             funcDef = "Hit " ++ funcName ++ "(vec3 p) {\n" ++ funcBody ++ "}"
             newEnv = Map.insert name (VFunc funcName) env 
             
             (funcs, draws) = runScript newEnv rest
         in (funcDef : funcs, draws)
         
+    -- NEW: Evaluate the top-level shape directly
     Draw shape -> 
-        let flatShapes = flattenShapes shape
-            sdfStrs = map (\s -> evalShape env "0.8, 0.4, 0.1" "0" s "p") flatShapes
+        let sdfStr = evalShape env "0.8, 0.4, 0.1" "0" shape "p"
             (funcs, draws) = runScript env rest
-        in (funcs, sdfStrs ++ draws)
+        in (funcs, sdfStr : draws)
 
 
 -- 5. GLSL COMPILER
+-- (You don't need to change compileToGLSL, it works perfectly with the new runScript!)
 compileToGLSL :: Script -> String
 compileToGLSL script = 
     let (funcs, draws) = runScript Map.empty script
@@ -224,6 +218,7 @@ glslPrimitives = unlines [
     "Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }",
     "Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }",
     "Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }",
+    "Hit opScale(Hit h, float s) { return Hit(h.d * s, h.col, h.mat); }",
     "float sdSphere(vec3 p, float s) { return length(p)-s; }",
     "float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }",
     "float sdCylinder(vec3 p, float h, float r) { vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h); return min(max(d.x,d.y),0.0) + length(max(d,0.0)); }",
