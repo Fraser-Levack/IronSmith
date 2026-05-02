@@ -85,11 +85,11 @@ handleEditing _ (VtyEvent (V.EvKey (V.KChar 'e') [V.MCtrl])) = do
             StaticMode -> FlyMode
             FlyMode    -> OrbitMode
     
-    liftIO $ sendToViewer ("CMD:" ++ show nextMode)
+    liftIO $ sendCommand ("CMD:" ++ show nextMode)
     put (st { _viewerMode = nextMode })
 
 handleEditing _ (VtyEvent (V.EvKey (V.KChar 'r') [V.MCtrl])) = do
-    liftIO $ sendToViewer "CMD:RESET_CAMERA"
+    liftIO $ sendCommand "CMD:RESET_CAMERA"
     -- No state changes needed, just fire and forget
     return ()
 
@@ -135,7 +135,7 @@ handleEditing chan brickEv@(VtyEvent ev) | isMovementKey ev = do
                         V.EvKey (V.KChar 'Z') [] -> "CMD:PAN_UP"
                         V.EvKey (V.KChar 'X') [] -> "CMD:PAN_DOWN"
                         _                        -> ""
-            liftIO $ sendToViewer cmd
+            liftIO $ sendCommand cmd
             return () -- Consumes the event so it doesn't type into the editor
         else do
             handleEditorInput chan brickEv -- Passes it through to type normally

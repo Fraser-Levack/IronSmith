@@ -19,7 +19,13 @@ import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, Std
 
 import Network.Socket
 import Network.Socket.ByteString (sendAll)
+
+-- NEW: Binary Serialization Imports
+import Data.ByteString.Builder (floatLE, toLazyByteString)
+import qualified Data.ByteString.Lazy as BL
+
 import qualified Data.ByteString.Char8 as C8
+
 
 launchViewer :: IO ProcessHandle
 launchViewer = do
@@ -34,7 +40,6 @@ stopViewer :: Maybe ProcessHandle -> IO ()
 stopViewer Nothing = return ()
 stopViewer (Just h) = terminateProcess h
 
--- | PERSISTENCE HELPERS
 getConfigDir :: IO FilePath
 getConfigDir = do
     configDir <- getAppUserDataDirectory "ironsmith"
@@ -51,7 +56,6 @@ getGlslPath = do
     dir <- getConfigDir
     return (dir </> "output.glsl")
 
--- --- FIX: GLOBAL DEMO PATH ---
 getDemoPath :: IO FilePath
 getDemoPath = do
     dir <- getConfigDir
@@ -72,18 +76,31 @@ saveRecent path oldRecents = do
     writeFile cachePath (unlines newRecents)
     return newRecents
 
--- | SEND GLSL OVER TCP
-sendToViewer :: String -> IO ()
-sendToViewer glsl = do
+-- | 1. SEND RAW BINARY FLOATS
+sendBytecode :: [Float] -> IO ()
+sendBytecode floats = do
+    let lazyBytes = toLazyByteString $ mconcat (map floatLE floats)
+        strictBytes = BL.toStrict lazyBytes
+    sendNetworkData strictBytes
+
+-- | 2. SEND TEXT COMMANDS
+sendCommand :: String -> IO ()
+sendCommand cmd = do
+    sendNetworkData (C8.pack cmd)
+
+-- | SHARED TCP HELPER
+sendNetworkData :: C8.ByteString -> IO ()
+sendNetworkData bytes = do
     _ <- forkIO $ withSocketsDo $ do
         catch (do
             sock <- socket AF_INET Stream 0
             let addr = SockAddrInet 7878 (tupleToHostAddress (127, 0, 0, 1))
             connect sock addr
-            sendAll sock (C8.pack glsl)
+            sendAll sock bytes
             close sock
             ) (\(e :: SomeException) -> return ())
     return ()
+
 
 -- | COMPILER BRIDGE
 compileAndSave :: Bool -> String -> IO (Maybe (String, Int))
@@ -94,19 +111,16 @@ compileAndSave isHardSave code =
                 firstErr = NE.head (bundleErrors bundle)
                 (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
                 lineNum = unPos (sourceLine (pstateSourcePos posState))
-                
             return $ Just (errStr, lineNum)
             
         Right astScript -> do
-            let glslData = compileToGLSL astScript
+            -- Generate the Bytecode instead of GLSL!
+            let bytecode = compileToBytecode astScript
             
-            -- Beam instantly to RAM
-            sendToViewer glslData
+            -- Beam the raw bytes to the Rust SSBO
+            sendBytecode bytecode
             
-            if isHardSave 
-                then do
-                    glslPath <- getGlslPath
-                    writeFile glslPath glslData
-                else return ()
+            -- (Skipping the hard-save logic for the output.glsl file for now, 
+            -- since we aren't generating strings anymore)
             
             return Nothing

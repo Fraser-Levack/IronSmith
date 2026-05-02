@@ -27,8 +27,8 @@ pub struct Renderer<'a> {
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    pipeline_layout: wgpu::PipelineLayout, 
     uniform_buffer: wgpu::Buffer,
+    scene_buffer: wgpu::Buffer, // NEW: Our SSBO buffer!
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
@@ -36,7 +36,7 @@ pub struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    pub async fn new(window: Arc<Window>, initial_glsl: String, log_path: PathBuf) -> Result<Self> {
+    pub async fn new(window: Arc<Window>, log_path: PathBuf) -> Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -80,26 +80,60 @@ impl<'a> Renderer<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        // NEW: HARDCODED BYTECODE SCENE
+        let scene_instructions: &[f32] = &[
+            1.0, -1.5, 0.0, 0.0, 2.0, 0.0,      // OP_SPHERE, x, y, z, r, mat
+            2.0,  1.5, 0.0, 0.0, 1.5, 1.5, 1.5, 1.0, // OP_BOX, x, y, z, w, h, d, mat
+            10.0,                               // OP_UNION
+            0.0                                 // OP_HALT
+        ];
+
+        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Scene SSBO"),
+            contents: bytemuck::cast_slice(scene_instructions),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // NEW: Add the Storage Buffer to the Layout
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            ],
             label: None,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                // NEW: Bind the Scene SSBO
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: scene_buffer.as_entire_binding(),
+                }
+            ],
             label: None,
         });
 
@@ -109,16 +143,12 @@ impl<'a> Renderer<'a> {
             push_constant_ranges: &[],
         });
 
-        let render_pipeline = match shader::create_pipeline(&device, &pipeline_layout, config.format, Some(initial_glsl)) {
-            Ok(pipeline) => pipeline,
-            Err(_) => {
-                shader::create_pipeline(&device, &pipeline_layout, config.format, None)?
-            }
-        };
+        // Create the pipeline using the static shader
+        let render_pipeline = shader::create_pipeline(&device, &pipeline_layout, config.format)?;
 
         Ok(Self {
             surface, device, queue, config, size,
-            render_pipeline, pipeline_layout, uniform_buffer,
+            render_pipeline, uniform_buffer, scene_buffer,
             bind_group, uniforms, start_time: Instant::now(), log_path,
         })
     }
@@ -126,16 +156,6 @@ impl<'a> Renderer<'a> {
     pub fn log_message(&self, msg: &str) {
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.log_path) {
             let _ = writeln!(file, "{}", msg);
-        }
-    }
-
-    pub fn reload_shader(&mut self, haskell_code: &str) -> Result<()> {
-        match shader::create_pipeline(&self.device, &self.pipeline_layout, self.config.format, Some(haskell_code.to_string())) {
-            Ok(new_pipeline) => {
-                self.render_pipeline = new_pipeline;
-                Ok(())
-            }
-            Err(e) => Err(e)
         }
     }
 
@@ -155,6 +175,11 @@ impl<'a> Renderer<'a> {
         self.uniforms.rotation = [camera.pitch, camera.yaw];
         self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0]; 
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
+    }
+
+    // NEW: Instantly overwrites the SSBO in GPU memory with the new AST instructions
+    pub fn update_scene(&self, instructions: &[f32]) {
+        self.queue.write_buffer(&self.scene_buffer, 0, bytemuck::cast_slice(instructions));
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

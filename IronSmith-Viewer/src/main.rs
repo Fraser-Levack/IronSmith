@@ -22,10 +22,6 @@ fn get_config_dir() -> PathBuf {
     dirs::config_dir().expect("Config dir error").join("ironsmith")
 }
 
-fn get_glsl_path() -> PathBuf {
-    get_config_dir().join("output.glsl")
-}
-
 fn setup_panic_logger() {
     let log_path = get_config_dir().join("forge.log");
     std::panic::set_hook(Box::new(move |info| {
@@ -39,15 +35,13 @@ fn setup_panic_logger() {
 async fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;
     let window = Arc::new(WindowBuilder::new()
-        .with_title("IronSmith Forge")
+        .with_title("IronSmith Forge (SSBO Live)")
         .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
         .build(&event_loop)?);
 
     let log_path = get_config_dir().join("forge.log");
-    let glsl_path = get_glsl_path();
     
-    let initial_glsl = std::fs::read_to_string(&glsl_path).unwrap_or_default();
-    let mut renderer = Renderer::new(window.clone(), initial_glsl, log_path).await?;
+    let mut renderer = Renderer::new(window.clone(), log_path).await?;
     
     let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
     listener.set_nonblocking(true).expect("Cannot set non-blocking");
@@ -68,24 +62,22 @@ async fn run() -> Result<()> {
                 }
                 
                 WindowEvent::RedrawRequested => {
-                    let mut latest_code = None;
+                    let mut latest_bytecode = None;
                     
                     // Route TCP messages
                     for msg in network::drain_sockets(&listener) {
                         match msg {
                             NetMessage::Command(cmd) => camera.process_command(&cmd),
-                            NetMessage::Shader(code) => latest_code = Some(code),
+                            NetMessage::Bytecode(code) => latest_bytecode = Some(code), // Catch the bytes
                         }
                     }
                     
-                    if let Some(code) = latest_code {
-                        match renderer.reload_shader(&code) {
-                            Ok(_) => renderer.log_message("Shader updated via TCP socket!"),
-                            Err(e) => renderer.log_message(&format!("Shader Error: {}", e)),
-                        }
+                    // If Haskell sent us a new scene, instantly overwrite the GPU Buffer!
+                    if let Some(bytecode) = latest_bytecode {
+                        renderer.update_scene(&bytecode);
                     }
                     
-                    // Update and Render
+                    // Update Camera and Render
                     camera.update_lerp();
                     renderer.update(&camera);
                     
