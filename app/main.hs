@@ -1,8 +1,10 @@
 module Main where
 
 import Brick
+import Brick.BChan (BChan, newBChan)
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
+import Graphics.Vty.CrossPlatform (mkVty)
 import System.Directory (doesFileExist)
 
 import AppState
@@ -10,11 +12,11 @@ import AppCore
 import AppUI
 import AppEvents
 
-app :: App AppState e Name
-app = App
+app :: BChan CustomEvent -> App AppState CustomEvent Name
+app chan = App
     { appDraw         = drawUI
-    , appChooseCursor = showFirstCursor 
-    , appHandleEvent  = handleEvent
+    , appChooseCursor = showFirstCursor
+    , appHandleEvent  = handleEvent chan 
     , appStartEvent   = return ()
     , appAttrMap      = const $ attrMap V.defAttr
         [ (attrName "error",    fg V.red)
@@ -33,40 +35,41 @@ app = App
 main :: IO ()
 main = do
     recents <- loadRecents
-    
-    -- --- FIX: USE GLOBAL DEMO PATH ---
     demoPath <- getDemoPath
     demoExists <- doesFileExist demoPath
     
     if demoExists
         then do
-            -- Load and compile the castle demo from the global config folder
             code <- readFile demoPath
             _ <- compileAndSave True code
             return ()
         else do
-            -- Safety fallback if demo.irsm is missing from the global folder
             _ <- compileAndSave True "torus(4, 1, 32)"
             return ()
     
-    -- 2. Launch the viewer
     h <- launchViewer
     
+    -- NEW: Create the bounded channel
+    chan <- newBChan 10
+    
     let initialState = AppState
-            { _mode        = Splash
+            { _mode         = Splash
             , _viewerMode   = OrbitMode
-            , _editor      = E.editor CodeEditor Nothing "" 
-            , _saveInput   = E.editor SaveEditor (Just 1) "" 
-            , _openInput   = E.editor OpenEditor (Just 1) ""
-            , _currentFile = Nothing
-            , _recentFiles = recents
-            , _status      = Normal
-            , _isDirty     = False
+            , _editor       = E.editor CodeEditor Nothing "" 
+            , _saveInput    = E.editor SaveEditor (Just 1) "" 
+            , _openInput    = E.editor OpenEditor (Just 1) ""
+            , _currentFile  = Nothing
+            , _recentFiles  = recents
+            , _status       = Normal
+            , _isDirty      = False
             , _viewerHandle = Just h 
+            , _editVersion  = 0 -- NEW: Start at 0
             }
             
-    finalState <- defaultMain app initialState
+    -- NEW: Boot up customMain instead of defaultMain
+    let buildVty = mkVty V.defaultConfig           -- FIX 3: Removed V. prefix
+    initialVty <- buildVty
+    finalState <- customMain initialVty buildVty (Just chan) (app chan) initialState
     
-    -- 3. Cleanup
     stopViewer (_viewerHandle finalState)
     putStrLn "Forge cold. Viewer closed."

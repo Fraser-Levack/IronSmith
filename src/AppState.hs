@@ -4,6 +4,9 @@ import qualified Brick.Widgets.Edit as E
 import Lens.Micro (Lens')
 import System.Process (ProcessHandle)
 
+data CustomEvent = CompileTimerFired Int
+    deriving (Show)
+
 data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt
     deriving (Eq)
 
@@ -26,7 +29,8 @@ data AppState = AppState
     , _recentFiles :: [FilePath]           
     , _status      :: AppStatus
     , _isDirty     :: Bool
-    , _viewerHandle :: Maybe ProcessHandle 
+    , _viewerHandle :: Maybe ProcessHandle
+    , _editVersion  :: Int
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)

@@ -28,6 +28,7 @@ executable ironsmith
                       parser-combinators,
                       brick,
                       vty,
+                      vty-crossplatform,
                       mtl,
                       microlens,
                       directory,
