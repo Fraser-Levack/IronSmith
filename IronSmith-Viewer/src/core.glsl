@@ -19,12 +19,30 @@ struct Hit { float d; vec3 col; int mat; };
 Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }
 Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }
 Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }
+Hit opScale(Hit h, float s) { return Hit(h.d * s, h.col, h.mat); }
+
 float sdSphere(vec3 p, float s) { return length(p)-s; }
 float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
+float sdCylinder(vec3 p, float h, float r) { vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h); return min(max(d.x,d.y),0.0) + length(max(d,0.0)); }
+float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }
+float sdCappedCone(vec3 p, float h, float r1, float r2) {
+    vec2 q = vec2(length(p.xz), p.y); vec2 k1 = vec2(r2,h); vec2 k2 = vec2(r2-r1,2.0*h);
+    vec2 ca = vec2(q.x-min(q.x,(q.y<0.0)?r1:r2), abs(q.y)-h);
+    vec2 cb = q - k1 + k2*clamp(dot(k1-q,k2)/dot(k2,k2), 0.0, 1.0);
+    float s = (cb.x<0.0 && ca.y<0.0) ? -1.0 : 1.0;
+    return s*sqrt(min(dot(ca,ca),dot(cb,cb)));
+}
+
+vec3 opRep(vec3 p, vec3 c) {
+    vec3 q = p;
+    if (c.x > 0.0) q.x = mod(p.x + 0.5*c.x, c.x) - 0.5*c.x;
+    if (c.y > 0.0) q.y = mod(p.y + 0.5*c.y, c.y) - 0.5*c.y;
+    if (c.z > 0.0) q.z = mod(p.z + 0.5*c.z, c.z) - 0.5*c.z;
+    return q;
+}
 
 // --- THE VIRTUAL MACHINE ---
 Hit map(vec3 p) {
-    // FIX: Shrunk from [32] down to [8] to prevent VRAM Register Spilling!
     Hit stack[8]; 
     int sp = 0;    
     int pc = 0;    
@@ -59,6 +77,28 @@ Hit map(vec3 p) {
             stack[sp++] = Hit(sdBox(current_p, ext) * current_scale, current_col, mat);
             pc += 5;
         } 
+        else if (op == 3.0) { // OP_CYLINDER
+            float r = instructions[pc+1];
+            float h = instructions[pc+2];
+            int mat = int(instructions[pc+3]);
+            stack[sp++] = Hit(sdCylinder(current_p, h, r) * current_scale, current_col, mat);
+            pc += 4;
+        }
+        else if (op == 4.0) { // OP_CONE
+            float r1 = instructions[pc+1];
+            float r2 = instructions[pc+2];
+            float h = instructions[pc+3];
+            int mat = int(instructions[pc+4]);
+            stack[sp++] = Hit(sdCappedCone(current_p, h, r1, r2) * current_scale, current_col, mat);
+            pc += 5;
+        }
+        else if (op == 5.0) { // OP_TORUS
+            float r = instructions[pc+1];
+            float tr = instructions[pc+2];
+            int mat = int(instructions[pc+3]);
+            stack[sp++] = Hit(sdTorus(current_p, vec2(r, tr)) * current_scale, current_col, mat);
+            pc += 4;
+        }
         
         // --- 2. CSG OPERATIONS ---
         else if (op == 10.0) { // OP_UNION
@@ -78,11 +118,15 @@ Hit map(vec3 p) {
         }
 
         // --- 3. SPACE TRANSFORMATIONS ---
-        else if (op >= 20.0 && op <= 24.0) {
-            // Push current state
-            p_stack[tsp] = current_p;
-            scale_stack[tsp] = current_scale;
-            tsp++;
+        // Range updated to catch 26.0 (Repeat)
+        else if (op >= 20.0 && op <= 26.0) {
+            
+            // Push current state only if it's a pushing operation
+            if (op != 25.0) {
+                p_stack[tsp] = current_p;
+                scale_stack[tsp] = current_scale;
+                tsp++;
+            }
             
             if (op == 20.0) { // ROTATE_X
                 float a = instructions[pc+1];
@@ -107,13 +151,16 @@ Hit map(vec3 p) {
             } else if (op == 24.0) { // MOVE
                 current_p -= vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
                 pc += 4;
+            } else if (op == 26.0) { // REPEAT
+                vec3 rep_c = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
+                current_p = opRep(current_p, rep_c);
+                pc += 4;
+            } else if (op == 25.0) { // POP_TRANSFORM
+                tsp--;
+                current_p = p_stack[tsp];
+                current_scale = scale_stack[tsp];
+                pc += 1;
             }
-        }
-        else if (op == 25.0) { // POP_TRANSFORM
-            tsp--;
-            current_p = p_stack[tsp];
-            current_scale = scale_stack[tsp];
-            pc += 1;
         }
 
         // --- 4. COLOR TRANSFORMATIONS ---
@@ -241,11 +288,13 @@ void main() {
                     float spec = pow(max(dot(ref_normal, half_dir), 0.0), 128.0);
                     shaded_ref = mix(ref_col * 0.2, fake_sky, 0.8) + vec3(1.0) * spec;
                 }
+
                 col = mix(material_col * 0.2, shaded_ref, 0.8);
             } else {
                 vec3 fake_sky = bg_color + max(ref_rd.y, 0.0) * 0.3;
                 col = mix(material_col * 0.2, fake_sky, 0.8);
             }
+
             vec3 half_dir = normalize(light_dir + view_dir);
             float spec = pow(max(dot(normal, half_dir), 0.0), 128.0);
             col += vec3(1.0) * spec;

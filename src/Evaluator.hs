@@ -57,6 +57,21 @@ compileShape env mat shape = case shape of
     Sphere er -> 
         let r = evalExpr env er
         in [1.0, r, mat]       -- OP_SPHERE
+
+    -- NEW: Cylinder
+    Cylinder er eh -> 
+        let r = evalExpr env er; h = evalExpr env eh / 2.0
+        in [3.0, r, h, mat]    -- OP_CYLINDER
+        
+    -- NEW: Cone
+    Cone er et eh -> 
+        let r1 = evalExpr env er; r2 = evalExpr env et; h = evalExpr env eh / 2.0
+        in [4.0, r1, r2, h, mat] -- OP_CONE
+        
+    -- NEW: Torus
+    Torus er et -> 
+        let r = evalExpr env er; tr = evalExpr env et
+        in [5.0, r, tr, mat]   -- OP_TORUS
         
     Union a b -> 
         compileShape env mat b ++ compileShape env mat a ++ [10.0]
@@ -67,7 +82,7 @@ compileShape env mat shape = case shape of
     Intersection a b -> 
         compileShape env mat b ++ compileShape env mat a ++ [12.0]
         
-    -- NEW: Transform Ops (Push State, Evaluate Children, Pop State)
+    -- Transform Ops
     Move ex ey ez innerShape -> 
         let x = evalExpr env ex; y = evalExpr env ey; z = evalExpr env ez
         in [24.0, x, y, z] ++ compileShape env mat innerShape ++ [25.0]
@@ -88,7 +103,12 @@ compileShape env mat shape = case shape of
         let sx = evalExpr env ex; sy = evalExpr env ey; sz = evalExpr env ez
         in [23.0, sx, sy, sz] ++ compileShape env mat innerShape ++ [25.0]
 
-    -- NEW: Color Ops
+    -- NEW: Modulo Repeat 
+    Repeat ex ey ez innerShape ->
+        let cx = evalExpr env ex; cy = evalExpr env ey; cz = evalExpr env ez
+        in [26.0, cx, cy, cz] ++ compileShape env mat innerShape ++ [25.0]
+
+    -- Color Ops
     Paint cName innerShapes ->
         let rgb = resolveColor cName
         in [30.0] ++ rgb ++ compileGroup env mat innerShapes ++ [31.0]
@@ -104,8 +124,7 @@ compileShape env mat shape = case shape of
         case Map.lookup name env of
             Just (VShape s) -> compileShape env mat s
             _ -> []
-            
-    _ -> [] 
+    
 
 -- Helper for evaluating lists of shapes
 compileGroup :: Env -> Float -> [Shape] -> [Float]
