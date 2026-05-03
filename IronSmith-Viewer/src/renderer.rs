@@ -80,14 +80,6 @@ impl<'a> Renderer<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // NEW: HARDCODED BYTECODE SCENE
-        let scene_instructions: &[f32] = &[
-            1.0, -1.5, 0.0, 0.0, 2.0, 0.0,      // OP_SPHERE, x, y, z, r, mat
-            2.0,  1.5, 0.0, 0.0, 1.5, 1.5, 1.5, 1.0, // OP_BOX, x, y, z, w, h, d, mat
-            10.0,                               // OP_UNION
-            0.0                                 // OP_HALT
-        ];
-
         // FIX: Create a massive 64KB buffer (holds ~16,000 float instructions)
         let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Scene SSBO"),
