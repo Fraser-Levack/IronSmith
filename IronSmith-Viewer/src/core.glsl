@@ -8,7 +8,6 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 u_target_pos; 
 };
 
-// The SSBO binding for our instruction stream
 layout(std430, set = 0, binding = 1) readonly buffer SceneData {
     float instructions[];
 };
@@ -20,52 +19,115 @@ struct Hit { float d; vec3 col; int mat; };
 Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }
 Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }
 Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }
-Hit opScale(Hit h, float s) { return Hit(h.d * s, h.col, h.mat); }
 float sdSphere(vec3 p, float s) { return length(p)-s; }
 float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
 
 // --- THE VIRTUAL MACHINE ---
 Hit map(vec3 p) {
-    Hit stack[10]; // Our memory stack
-    int sp = 0;    // Stack Pointer
-    int pc = 0;    // Program Counter
+    // FIX: Shrunk from [32] down to [8] to prevent VRAM Register Spilling!
+    Hit stack[8]; 
+    int sp = 0;    
+    int pc = 0;    
     
-    while (pc < 1000) {
+    vec3 p_stack[8];
+    float scale_stack[8];
+    vec3 col_stack[8];
+    int tsp = 0; 
+    int csp = 0; 
+
+    vec3 current_p = p;
+    float current_scale = 1.0;
+    vec3 current_col = vec3(0.8, 0.8, 0.8);
+    
+    while (pc < 2000) {
         float op = instructions[pc];
         
         if (op == 0.0) { // OP_HALT
             break;
         } 
+        
+        // --- 1. PRIMITIVES ---
         else if (op == 1.0) { // OP_SPHERE
-            vec3 pos = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-            float r = instructions[pc+4];
-            int mat = int(instructions[pc+5]);
-            
-            stack[sp++] = Hit(sdSphere(p - pos, r), vec3(0.8, 0.8, 0.8), mat);
-            pc += 6; 
+            float r = instructions[pc+1];
+            int mat = int(instructions[pc+2]);
+            stack[sp++] = Hit(sdSphere(current_p, r) * current_scale, current_col, mat);
+            pc += 3; 
         } 
         else if (op == 2.0) { // OP_BOX
-            vec3 pos = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-            vec3 ext = vec3(instructions[pc+4], instructions[pc+5], instructions[pc+6]);
-            int mat = int(instructions[pc+7]);
-            
-            stack[sp++] = Hit(sdBox(p - pos, ext), vec3(0.8, 0.4, 0.1), mat);
-            pc += 8;
+            vec3 ext = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
+            int mat = int(instructions[pc+4]);
+            stack[sp++] = Hit(sdBox(current_p, ext) * current_scale, current_col, mat);
+            pc += 5;
         } 
+        
+        // --- 2. CSG OPERATIONS ---
         else if (op == 10.0) { // OP_UNION
-            Hit b = stack[--sp]; 
-            Hit a = stack[--sp]; 
+            Hit b = stack[--sp]; Hit a = stack[--sp]; 
             stack[sp++] = opU(a, b);
             pc += 1;
         }
         else if (op == 11.0) { // OP_DIFF
-            Hit b = stack[--sp]; 
-            Hit a = stack[--sp]; 
+            Hit b = stack[--sp]; Hit a = stack[--sp]; 
             stack[sp++] = opS(a, b);
             pc += 1;
-        } else {
-            break; 
         }
+        else if (op == 12.0) { // OP_INTERSECT
+            Hit b = stack[--sp]; Hit a = stack[--sp]; 
+            stack[sp++] = opI(a, b);
+            pc += 1;
+        }
+
+        // --- 3. SPACE TRANSFORMATIONS ---
+        else if (op >= 20.0 && op <= 24.0) {
+            // Push current state
+            p_stack[tsp] = current_p;
+            scale_stack[tsp] = current_scale;
+            tsp++;
+            
+            if (op == 20.0) { // ROTATE_X
+                float a = instructions[pc+1];
+                float c = cos(-a); float s = sin(-a);
+                current_p = mat3(1,0,0, 0,c,s, 0,-s,c) * current_p;
+                pc += 2;
+            } else if (op == 21.0) { // ROTATE_Y
+                float a = instructions[pc+1];
+                float c = cos(-a); float s = sin(-a);
+                current_p = mat3(c,0,-s, 0,1,0, s,0,c) * current_p;
+                pc += 2;
+            } else if (op == 22.0) { // ROTATE_Z
+                float a = instructions[pc+1];
+                float c = cos(-a); float s = sin(-a);
+                current_p = mat3(c,s,0, -s,c,0, 0,0,1) * current_p;
+                pc += 2;
+            } else if (op == 23.0) { // SCALE
+                vec3 s3 = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
+                current_scale *= min(s3.x, min(s3.y, s3.z));
+                current_p /= s3;
+                pc += 4;
+            } else if (op == 24.0) { // MOVE
+                current_p -= vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
+                pc += 4;
+            }
+        }
+        else if (op == 25.0) { // POP_TRANSFORM
+            tsp--;
+            current_p = p_stack[tsp];
+            current_scale = scale_stack[tsp];
+            pc += 1;
+        }
+
+        // --- 4. COLOR TRANSFORMATIONS ---
+        else if (op == 30.0) { // PUSH_COLOR
+            col_stack[csp++] = current_col;
+            current_col = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
+            pc += 4;
+        }
+        else if (op == 31.0) { // POP_COLOR
+            current_col = col_stack[--csp];
+            pc += 1;
+        }
+        
+        else { break; } // Failsafe
     }
     
     if (sp == 0) return Hit(999999.0, vec3(0.0), 0);
@@ -103,7 +165,6 @@ void main() {
     int material_id = 0;
     bool hit = false; 
 
-    // Primary Raymarch
     for(int i = 0; i < 256; i++) {
         Hit res = map(ro + rd * t);
         if(res.d < 0.001) {
@@ -180,18 +241,15 @@ void main() {
                     float spec = pow(max(dot(ref_normal, half_dir), 0.0), 128.0);
                     shaded_ref = mix(ref_col * 0.2, fake_sky, 0.8) + vec3(1.0) * spec;
                 }
-
                 col = mix(material_col * 0.2, shaded_ref, 0.8);
             } else {
                 vec3 fake_sky = bg_color + max(ref_rd.y, 0.0) * 0.3;
                 col = mix(material_col * 0.2, fake_sky, 0.8);
             }
-
             vec3 half_dir = normalize(light_dir + view_dir);
             float spec = pow(max(dot(normal, half_dir), 0.0), 128.0);
             col += vec3(1.0) * spec;
         }
     }
-    
     out_color = vec4(pow(col, vec3(0.4545)), 1.0); 
 }

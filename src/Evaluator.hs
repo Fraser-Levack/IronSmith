@@ -3,10 +3,14 @@ module Evaluator where
 
 import AST
 import qualified Data.Map as Map
+import Numeric (readHex)
 
--- Environment now stores the raw Shape AST, not a GLSL string!
 data IronValue = VNum Float | VShape Shape
 type Env = Map.Map String IronValue
+
+-- Convert Degrees to Radians
+degToRad :: Float -> Float
+degToRad d = d * pi / 180.0
 
 evalExpr :: Env -> Expr -> Float
 evalExpr _   (Lit val)   = val
@@ -25,79 +29,115 @@ resolveMaterial "neon"    = 2.0
 resolveMaterial "metal"   = 3.0
 resolveMaterial _         = 0.0
 
+-- NEW: Resolve colors to raw RGB floats
+resolveColor :: String -> [Float]
+resolveColor "white" = [1.0, 1.0, 1.0]
+resolveColor "black" = [0.0, 0.0, 0.0]
+resolveColor "red"   = [1.0, 0.0, 0.0]
+resolveColor "green" = [0.0, 1.0, 0.0]
+resolveColor "blue"  = [0.0, 0.0, 1.0]
+resolveColor ('#':hexStr) | length hexStr == 6 =
+    let rStr = take 2 hexStr
+        gStr = take 2 (drop 2 hexStr)
+        bStr = drop 4 hexStr
+        parseHex s = case readHex s of
+                        [(val, "")] -> (fromIntegral (val :: Int) :: Float) / 255.0
+                        _ -> 1.0
+    in [parseHex rStr, parseHex gStr, parseHex bStr]
+resolveColor _ = [0.8, 0.4, 0.1] -- Default Forge Orange
+
 -- | THE POSTFIX COMPILER
--- Takes Environment, (X, Y, Z) Offset, Material ID, and the Shape
-compileShape :: Env -> (Float, Float, Float) -> Float -> Shape -> [Float]
-compileShape env (tx, ty, tz) mat shape = case shape of
+compileShape :: Env -> Float -> Shape -> [Float]
+compileShape env mat shape = case shape of
     
     Cube ex ey ez -> 
-        let w = evalExpr env ex / 2.0
-            h = evalExpr env ey / 2.0
-            d = evalExpr env ez / 2.0
-        in [2.0, tx, ty, tz, w, h, d, mat] -- OP_BOX
+        let w = evalExpr env ex / 2.0; h = evalExpr env ey / 2.0; d = evalExpr env ez / 2.0
+        in [2.0, w, h, d, mat] -- OP_BOX
         
     Sphere er -> 
         let r = evalExpr env er
-        in [1.0, tx, ty, tz, r, mat]       -- OP_SPHERE
+        in [1.0, r, mat]       -- OP_SPHERE
         
     Union a b -> 
-        -- Postfix: Right child, Left child, then OP_UNION
-        compileShape env (tx, ty, tz) mat b ++ 
-        compileShape env (tx, ty, tz) mat a ++ 
-        [10.0]
+        compileShape env mat b ++ compileShape env mat a ++ [10.0]
         
     Difference a b -> 
-        compileShape env (tx, ty, tz) mat b ++ 
-        compileShape env (tx, ty, tz) mat a ++ 
-        [11.0]
+        compileShape env mat b ++ compileShape env mat a ++ [11.0]
+
+    Intersection a b -> 
+        compileShape env mat b ++ compileShape env mat a ++ [12.0]
         
+    -- NEW: Transform Ops (Push State, Evaluate Children, Pop State)
     Move ex ey ez innerShape -> 
-        let dx = evalExpr env ex
-            dy = evalExpr env ey
-            dz = evalExpr env ez
-        -- Add the move to our running offset and recurse
-        in compileShape env (tx + dx, ty + dy, tz + dz) mat innerShape
+        let x = evalExpr env ex; y = evalExpr env ey; z = evalExpr env ez
+        in [24.0, x, y, z] ++ compileShape env mat innerShape ++ [25.0]
+        
+    RotateX edeg innerShape ->
+        let rads = degToRad (evalExpr env edeg)
+        in [20.0, rads] ++ compileShape env mat innerShape ++ [25.0]
+
+    RotateY edeg innerShape ->
+        let rads = degToRad (evalExpr env edeg)
+        in [21.0, rads] ++ compileShape env mat innerShape ++ [25.0]
+
+    RotateZ edeg innerShape ->
+        let rads = degToRad (evalExpr env edeg)
+        in [22.0, rads] ++ compileShape env mat innerShape ++ [25.0]
+
+    Scale ex ey ez innerShape ->
+        let sx = evalExpr env ex; sy = evalExpr env ey; sz = evalExpr env ez
+        in [23.0, sx, sy, sz] ++ compileShape env mat innerShape ++ [25.0]
+
+    -- NEW: Color Ops
+    Paint cName innerShapes ->
+        let rgb = resolveColor cName
+        in [30.0] ++ rgb ++ compileGroup env mat innerShapes ++ [31.0]
         
     Material mName innerShapes ->
         let newMat = resolveMaterial mName
-        in compileGroup env (tx, ty, tz) newMat innerShapes
+        in compileGroup env newMat innerShapes
         
     Group shapes -> 
-        compileGroup env (tx, ty, tz) mat shapes
+        compileGroup env mat shapes
         
     ShapeRef name ->
         case Map.lookup name env of
-            Just (VShape s) -> compileShape env (tx, ty, tz) mat s
+            Just (VShape s) -> compileShape env mat s
             _ -> []
             
-    -- Ignored for MVP: Scale, Rotate, Paint, Torus, Cylinder, Cone. 
     _ -> [] 
 
--- Helper to turn a Group of N shapes into a chain of Unions
-compileGroup :: Env -> (Float, Float, Float) -> Float -> [Shape] -> [Float]
-compileGroup _ _ _ [] = []
-compileGroup env pos mat [s] = compileShape env pos mat s
-compileGroup env pos mat (s:ss) = 
-    compileGroup env pos mat ss ++ compileShape env pos mat s ++ [10.0]
-
+-- Helper for evaluating lists of shapes
+compileGroup :: Env -> Float -> [Shape] -> [Float]
+compileGroup _ _ [] = []
+compileGroup env mat [s] = compileShape env mat s
+compileGroup env mat (s:ss) = 
+    compileGroup env mat ss ++ compileShape env mat s ++ [10.0]
 
 -- | SCRIPT RUNNER
-runScript :: Env -> Script -> [Float]
+-- NEW: Now returns a List of Bytecode Arrays (one for each Draw statement)
+runScript :: Env -> Script -> [[Float]]
 runScript _ [] = []
 runScript env (stmt:rest) = case stmt of
     Assign name expr -> 
-        let val = evalExpr env expr
-        in runScript (Map.insert name (VNum val) env) rest
+        runScript (Map.insert name (VNum (evalExpr env expr)) env) rest
         
     AssignShape name shape -> 
         runScript (Map.insert name (VShape shape) env) rest
         
     Draw shape -> 
-        compileShape env (0.0, 0.0, 0.0) 0.0 shape ++ runScript env rest
+        compileShape env 0.0 shape : runScript env rest
 
 
 -- | ENTRY POINT
 compileToBytecode :: Script -> [Float]
 compileToBytecode script = 
-    let bytes = runScript Map.empty script
-    in bytes ++ [0.0] -- Append OP_HALT at the very end
+    -- 1. Get all the drawn shapes, filtering out any empty errors
+    let draws = filter (not . null) (runScript Map.empty script)
+    in case draws of
+        [] -> [0.0] -- Nothing drawn, just halt
+        
+        -- 2. If we have shapes, put the first one on the stack, 
+        -- then append every subsequent shape followed immediately by OP_UNION (10.0)
+        (firstDraw:restDraws) -> 
+            firstDraw ++ concatMap (\d -> d ++ [10.0]) restDraws ++ [0.0]
