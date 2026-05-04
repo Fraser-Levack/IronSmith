@@ -232,19 +232,36 @@ void main() {
     int material_id = 0;
     bool hit = false; 
 
-    // --- PHASE 2: PRIMARY RAYMARCH OPTIMIZATION ---
-    // Cut iterations from 256 -> 100
+    // --- PHASE 3: GLOBAL BOUNDING SPHERE ---
+    float scene_radius = 35.0; // Safely encapsulates your 30x30 shifted floor
+    vec3 scene_center = vec3(0.0, 0.0, 0.0);
+
     for(int i = 0; i < 100; i++) {
-        Hit res = map(ro + rd * t);
-        if(res.d < 0.001) {
-            material_col = res.col; 
-            material_id = res.mat;
-            hit = true; 
-            break;
+        vec3 p = ro + rd * t;
+        
+        // 1. Calculate distance to the "Guard Sphere"
+        float sphere_dist = length(p - scene_center) - scene_radius;
+        
+        float d;
+        if (sphere_dist > 0.05) {
+            // 2. RAY IS OUTSIDE: Skip the VM!
+            // We sprint forward by the distance to the sphere boundary
+            d = sphere_dist;
+        } else {
+            // 3. RAY IS INSIDE: Run the expensive VM math
+            Hit res = map(p);
+            d = res.d;
+            
+            if(d < 0.001) {
+                material_col = res.col; 
+                material_id = res.mat;
+                hit = true; 
+                break;
+            }
         }
-        // Cut max draw distance from 100.0 -> 50.0
+
         if(t > 50.0) break;
-        t += max(res.d, 0.005); 
+        t += max(d, 0.005); 
     }
 
     vec3 bg_color = vec3(0.02, 0.02, 0.05);
