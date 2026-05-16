@@ -8,8 +8,9 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 u_target_pos; 
 };
 
+// FETCH VEC4 CHUNKS INSTEAD OF FLOATS
 layout(std430, set = 0, binding = 1) readonly buffer SceneData {
-    float instructions[];
+    vec4 instructions[];
 };
 
 layout(location = 0) out vec4 out_color;
@@ -19,7 +20,6 @@ struct Hit { float d; vec3 col; int mat; };
 Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }
 Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }
 Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }
-Hit opScale(Hit h, float s) { return Hit(h.d * s, h.col, h.mat); }
 
 float sdSphere(vec3 p, float s) { return length(p)-s; }
 float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
@@ -43,171 +43,110 @@ vec3 opRep(vec3 p, vec3 c) {
 
 // --- THE VIRTUAL MACHINE ---
 Hit map(vec3 p) {
-    Hit stack[8]; 
-    int sp = 0;    
-    int pc = 0;    
+    // DESTROY REGISTER SPILLING: Use explicit variables instead of arrays
+    Hit s0, s1, s2, s3, s4, s5, s6, s7;
+    int sp = 0; 
     
-    vec3 p_stack[8];
-    float scale_stack[8];
-    vec3 col_stack[8];
+    vec3 p0, p1, p2, p3, p4, p5, p6, p7;
+    float sc0, sc1, sc2, sc3, sc4, sc5, sc6, sc7;
     int tsp = 0; 
+    
+    vec3 c0, c1, c2, c3, c4, c5, c6, c7;
     int csp = 0; 
 
+    int pc = 0; 
     vec3 current_p = p;
     float current_scale = 1.0;
     vec3 current_col = vec3(0.8, 0.8, 0.8);
-    
-    while (pc < 2000) {
-        int iop = int(instructions[pc]);
+
+    // MACROS: Forces the GLSL compiler to assign these to fast GPU hardware registers
+    #define PUSH_HIT(h) if(sp==0)s0=h; else if(sp==1)s1=h; else if(sp==2)s2=h; else if(sp==3)s3=h; else if(sp==4)s4=h; else if(sp==5)s5=h; else if(sp==6)s6=h; else if(sp==7)s7=h; sp++
+    #define POP_HIT(out_h) sp--; if(sp==0)out_h=s0; else if(sp==1)out_h=s1; else if(sp==2)out_h=s2; else if(sp==3)out_h=s3; else if(sp==4)out_h=s4; else if(sp==5)out_h=s5; else if(sp==6)out_h=s6; else if(sp==7)out_h=s7
+
+    #define PUSH_TRANSFORM(pt, s) if(tsp==0){p0=pt;sc0=s;} else if(tsp==1){p1=pt;sc1=s;} else if(tsp==2){p2=pt;sc2=s;} else if(tsp==3){p3=pt;sc3=s;} else if(tsp==4){p4=pt;sc4=s;} tsp++
+    #define POP_TRANSFORM(out_p, out_s) tsp--; if(tsp==0){out_p=p0;out_s=sc0;} else if(tsp==1){out_p=p1;out_s=sc1;} else if(tsp==2){out_p=p2;out_s=sc2;} else if(tsp==3){out_p=p3;out_s=sc3;} else if(tsp==4){out_p=p4;out_s=sc4;}
+
+    #define PUSH_COLOR(c) if(csp==0)c0=c; else if(csp==1)c1=c; else if(csp==2)c2=c; else if(csp==3)c3=c; csp++
+    #define POP_COLOR(out_c) csp--; if(csp==0)out_c=c0; else if(csp==1)out_c=c1; else if(csp==2)out_c=c2; else if(csp==3)out_c=c3;
+
+    while (pc < 1000) { // Safety limit
+        vec4 inst1 = instructions[pc];
+        int iop = int(inst1.x);
         
-        // Push current space state before we mutate it (excluding POP)
         if (iop >= 20 && iop <= 26 && iop != 25) {
-            p_stack[tsp] = current_p;
-            scale_stack[tsp] = current_scale;
-            tsp++;
+            PUSH_TRANSFORM(current_p, current_scale);
         }
         
         switch (iop) {
-            case 0: { // OP_HALT
-                pc = 9999; // Break the while loop
-                break;
+            case 0: { pc = 9999; break; }
+            case 1: { // SPHERE [1.0, r, mat, 0.0]
+                PUSH_HIT(Hit(sdSphere(current_p, inst1.y) * current_scale, current_col, int(inst1.z))); 
+                pc += 1; break; 
             }
-            // --- 1. PRIMITIVES ---
-            case 1: { // OP_SPHERE
-                float r = instructions[pc+1];
-                int mat = int(instructions[pc+2]);
-                stack[sp++] = Hit(sdSphere(current_p, r) * current_scale, current_col, mat);
-                pc += 3;
-                break;
+            case 2: { // BOX [2.0, w, h, d] [mat, 0.0, 0.0, 0.0]
+                vec4 inst2 = instructions[pc+1];
+                PUSH_HIT(Hit(sdBox(current_p, inst1.yzw) * current_scale, current_col, int(inst2.x))); 
+                pc += 2; break; 
             }
-            case 2: { // OP_BOX
-                vec3 ext = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-                int mat = int(instructions[pc+4]);
-                stack[sp++] = Hit(sdBox(current_p, ext) * current_scale, current_col, mat);
-                pc += 5;
-                break;
+            case 3: { // CYLINDER [3.0, r, h, mat]
+                PUSH_HIT(Hit(sdCylinder(current_p, inst1.z, inst1.y) * current_scale, current_col, int(inst1.w))); 
+                pc += 1; break; 
             }
-            case 3: { // OP_CYLINDER
-                float r = instructions[pc+1];
-                float h = instructions[pc+2];
-                int mat = int(instructions[pc+3]);
-                stack[sp++] = Hit(sdCylinder(current_p, h, r) * current_scale, current_col, mat);
-                pc += 4;
-                break;
+            case 4: { // CONE [4.0, r1, r2, h] [mat, 0.0, 0.0, 0.0]
+                vec4 inst2 = instructions[pc+1];
+                PUSH_HIT(Hit(sdCappedCone(current_p, inst1.w, inst1.y, inst1.z) * current_scale, current_col, int(inst2.x))); 
+                pc += 2; break; 
             }
-            case 4: { // OP_CONE
-                float r1 = instructions[pc+1];
-                float r2 = instructions[pc+2];
-                float h = instructions[pc+3];
-                int mat = int(instructions[pc+4]);
-                stack[sp++] = Hit(sdCappedCone(current_p, h, r1, r2) * current_scale, current_col, mat);
-                pc += 5;
-                break;
+            case 5: { // TORUS [5.0, r, tr, mat]
+                PUSH_HIT(Hit(sdTorus(current_p, inst1.yz) * current_scale, current_col, int(inst1.w))); 
+                pc += 1; break; 
             }
-            case 5: { // OP_TORUS
-                float r = instructions[pc+1];
-                float tr = instructions[pc+2];
-                int mat = int(instructions[pc+3]);
-                stack[sp++] = Hit(sdTorus(current_p, vec2(r, tr)) * current_scale, current_col, mat);
-                pc += 4;
-                break;
+            case 10: { Hit a, b; POP_HIT(b); POP_HIT(a); PUSH_HIT(opU(a, b)); pc += 1; break; }
+            case 11: { Hit a, b; POP_HIT(b); POP_HIT(a); PUSH_HIT(opS(a, b)); pc += 1; break; }
+            case 12: { Hit a, b; POP_HIT(b); POP_HIT(a); PUSH_HIT(opI(a, b)); pc += 1; break; }
+            case 20: { // ROTATE X
+                float a = inst1.y; float c = cos(-a); float s = sin(-a);
+                current_p = mat3(1,0,0, 0,c,s, 0,-s,c) * current_p; pc += 1; break; 
             }
-            // --- 2. CSG OPERATIONS ---
-            case 10: { // OP_UNION
-                Hit b = stack[--sp]; Hit a = stack[--sp]; 
-                stack[sp++] = opU(a, b);
-                pc += 1;
-                break;
+            case 21: { // ROTATE Y
+                float a = inst1.y; float c = cos(-a); float s = sin(-a);
+                current_p = mat3(c,0,-s, 0,1,0, s,0,c) * current_p; pc += 1; break; 
             }
-            case 11: { // OP_DIFF
-                Hit b = stack[--sp]; Hit a = stack[--sp]; 
-                stack[sp++] = opS(a, b);
-                pc += 1;
-                break;
-            }
-            case 12: { // OP_INTERSECT
-                Hit b = stack[--sp]; Hit a = stack[--sp]; 
-                stack[sp++] = opI(a, b);
-                pc += 1;
-                break;
-            }
-            // --- 3. SPACE TRANSFORMATIONS ---
-            case 20: { // ROTATE_X
-                float a = instructions[pc+1];
-                float c = cos(-a); float s = sin(-a);
-                current_p = mat3(1,0,0, 0,c,s, 0,-s,c) * current_p;
-                pc += 2;
-                break;
-            }
-            case 21: { // ROTATE_Y
-                float a = instructions[pc+1];
-                float c = cos(-a); float s = sin(-a);
-                current_p = mat3(c,0,-s, 0,1,0, s,0,c) * current_p;
-                pc += 2;
-                break;
-            }
-            case 22: { // ROTATE_Z
-                float a = instructions[pc+1];
-                float c = cos(-a); float s = sin(-a);
-                current_p = mat3(c,s,0, -s,c,0, 0,0,1) * current_p;
-                pc += 2;
-                break;
+            case 22: { // ROTATE Z
+                float a = inst1.y; float c = cos(-a); float s = sin(-a);
+                current_p = mat3(c,s,0, -s,c,0, 0,0,1) * current_p; pc += 1; break; 
             }
             case 23: { // SCALE
-                vec3 s3 = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-                current_scale *= min(s3.x, min(s3.y, s3.z));
-                current_p /= s3;
-                pc += 4;
-                break;
+                current_scale *= min(inst1.y, min(inst1.z, inst1.w));
+                current_p /= inst1.yzw; pc += 1; break; 
             }
             case 24: { // MOVE
-                current_p -= vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-                pc += 4;
-                break;
+                current_p -= inst1.yzw; pc += 1; break; 
             }
             case 26: { // REPEAT
-                vec3 rep_c = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-                current_p = opRep(current_p, rep_c);
-                pc += 4;
-                break;
+                current_p = opRep(current_p, inst1.yzw); pc += 1; break; 
             }
-            case 25: { // POP_TRANSFORM
-                tsp--;
-                current_p = p_stack[tsp];
-                current_scale = scale_stack[tsp];
-                pc += 1;
-                break;
-            }
-            // --- 4. COLOR TRANSFORMATIONS ---
-            case 30: { // PUSH_COLOR
-                col_stack[csp++] = current_col;
-                current_col = vec3(instructions[pc+1], instructions[pc+2], instructions[pc+3]);
-                pc += 4;
-                break;
-            }
-            case 31: { // POP_COLOR
-                current_col = col_stack[--csp];
-                pc += 1;
-                break;
-            }
-            default: { // Failsafe
-                pc = 9999;
-                break;
-            }
+            case 25: { POP_TRANSFORM(current_p, current_scale); pc += 1; break; }
+            case 30: { PUSH_COLOR(current_col); current_col = inst1.yzw; pc += 1; break; }
+            case 31: { POP_COLOR(current_col); pc += 1; break; }
+            default: { pc = 9999; break; }
         }
     }
     
     if (sp == 0) return Hit(999999.0, vec3(0.0), 0);
-    return stack[0]; 
+    Hit res; POP_HIT(res);
+    return res; 
 }
 
+// 33% Faster Tetrahedral Normal Approximation
 vec3 calcNormal(vec3 p) {
-    vec2 e = vec2(0.001, 0.0);
-    return normalize(vec3(
-        map(p + e.xyy).d - map(p - e.xyy).d,
-        map(p + e.yxy).d - map(p - e.yxy).d,
-        map(p + e.yyx).d - map(p - e.yyx).d
-    ));
+    vec2 e = vec2(1.0, -1.0) * 0.0005;
+    return normalize(
+        e.xyy * map(p + e.xyy).d +
+        e.yyx * map(p + e.yyx).d +
+        e.yxy * map(p + e.yxy).d +
+        e.xxx * map(p + e.xxx).d
+    );
 }
 
 void main() {
@@ -232,36 +171,29 @@ void main() {
     int material_id = 0;
     bool hit = false; 
 
-    // --- PHASE 3: GLOBAL BOUNDING SPHERE ---
-    float scene_radius = 35.0; // Safely encapsulates your 30x30 shifted floor
+    // --- OPTIMIZED GLOBAL BOUNDING SPHERE ---
+    float scene_radius = 35.0; 
     vec3 scene_center = vec3(0.0, 0.0, 0.0);
+    vec3 oc = ro - scene_center;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - scene_radius * scene_radius;
+    float h = b * b - c;
 
-    for(int i = 0; i < 100; i++) {
-        vec3 p = ro + rd * t;
-        
-        // 1. Calculate distance to the "Guard Sphere"
-        float sphere_dist = length(p - scene_center) - scene_radius;
-        
-        float d;
-        if (sphere_dist > 0.05) {
-            // 2. RAY IS OUTSIDE: Skip the VM!
-            // We sprint forward by the distance to the sphere boundary
-            d = sphere_dist;
-        } else {
-            // 3. RAY IS INSIDE: Run the expensive VM math
+    // Ray vs Sphere math: skip entirely if it misses!
+    if (h >= 0.0) {
+        t = max(0.0, -b - sqrt(h)); 
+        for(int i = 0; i < 60; i++) { // Max steps reduced
+            vec3 p = ro + rd * t;
             Hit res = map(p);
-            d = res.d;
-            
-            if(d < 0.001) {
+            if(res.d < 0.001) {
                 material_col = res.col; 
                 material_id = res.mat;
                 hit = true; 
                 break;
             }
+            if(t > 50.0) break;
+            t += max(res.d, 0.005); 
         }
-
-        if(t > 50.0) break;
-        t += max(d, 0.005); 
     }
 
     vec3 bg_color = vec3(0.02, 0.02, 0.05);
@@ -294,9 +226,8 @@ void main() {
             vec3 ref_col = vec3(0.0);
             int ref_mat = 0; 
 
-            // --- PHASE 2: REFLECTION OPTIMIZATION ---
-            // Cut reflection iterations from 100 -> 30
-            for(int i = 0; i < 30; i++) {
+            // Fast exit reflections
+            for(int i = 0; i < 15; i++) { // Cut to 15!
                 Hit ref_res = map(ref_ro + ref_rd * ref_t);
                 if(ref_res.d < 0.001) {
                     ref_col = ref_res.col;
@@ -304,9 +235,8 @@ void main() {
                     ref_hit = true;
                     break;
                 }
-                // Cut reflection max distance from 50.0 -> 30.0
-                if(ref_t > 30.0) break;
-                ref_t += max(ref_res.d, 0.005);
+                if(ref_t > 30.0) break; // Cut to 30!
+                ref_t += max(ref_res.d, 0.01); // Increased min step!
             }
 
             if (ref_hit) {
@@ -331,13 +261,12 @@ void main() {
                     float spec = pow(max(dot(ref_normal, half_dir), 0.0), 128.0);
                     shaded_ref = mix(ref_col * 0.2, fake_sky, 0.8) + vec3(1.0) * spec;
                 }
-
                 col = mix(material_col * 0.2, shaded_ref, 0.8);
             } else {
                 vec3 fake_sky = bg_color + max(ref_rd.y, 0.0) * 0.3;
                 col = mix(material_col * 0.2, fake_sky, 0.8);
             }
-
+            
             vec3 half_dir = normalize(light_dir + view_dir);
             float spec = pow(max(dot(normal, half_dir), 0.0), 128.0);
             col += vec3(1.0) * spec;
