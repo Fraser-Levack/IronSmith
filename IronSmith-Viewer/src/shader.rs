@@ -74,10 +74,11 @@ void main() {
         float t_out = -b + sqrt(h); 
         t = max(0.0, -b - sqrt(h));
 
-        for(int i = 0; i < 60; i++) { 
+        for(int i = 0; i < 150; i++) { 
             if(t > t_out) break; 
             vec3 p = ro + rd * t; Hit res = map(p);
-            if(res.d < 0.001) { material_col = res.col; material_id = res.mat; hit = true; break; }
+            // Dynamic precision based on distance to fix grazing edge starvation
+            if(res.d < max(0.001, 0.0002 * t)) { material_col = res.col; material_id = res.mat; hit = true; break; }
             t += res.d; 
         }
     }
@@ -94,9 +95,10 @@ void main() {
         else if (material_id == 3) {
             vec3 ref_rd = reflect(rd, normal); vec3 ref_ro = pos + normal * 0.01; 
             float ref_t = 0.0; bool ref_hit = false; vec3 ref_col = vec3(0.0);
-            for(int i = 0; i < 15; i++) { 
+            for(int i = 0; i < 30; i++) { 
                 Hit ref_res = map(ref_ro + ref_rd * ref_t);
-                if(ref_res.d < 0.005) { ref_col = ref_res.col; ref_hit = true; break; }
+                // Dynamic precision for reflections too
+                if(ref_res.d < max(0.005, 0.001 * ref_t)) { ref_col = ref_res.col; ref_hit = true; break; }
                 if(ref_t > 20.0) break; ref_t += ref_res.d;
             }
             vec3 shaded_ref = ref_hit ? (ref_col * max(dot(calcNormal(ref_ro + ref_rd * ref_t), light_dir), 0.0) + ref_col * 0.1) : (bg_color + max(ref_rd.y, 0.0) * 0.3);
