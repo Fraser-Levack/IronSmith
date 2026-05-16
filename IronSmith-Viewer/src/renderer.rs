@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use std::io::Write; 
+use std::sync::mpsc;
 
 use crate::camera::Camera;
 use crate::shader;
@@ -16,34 +17,34 @@ pub struct ShaderUniforms {
     pub time: f32,
     pub camera_dist: f32,
     pub rotation: [f32; 2], 
-    pub inst_count: f32, // Replaced padding with instruction count
-    pub padding2: f32,
+    pub padding: [f32; 2],
     pub target_pos: [f32; 4],
 }
 
 pub struct Renderer<'a> {
     surface: wgpu::Surface<'a>,
-    device: wgpu::Device,
+    device: Arc<wgpu::Device>, // Wrapped in Arc for safe thread sharing
     queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
+    
     render_pipeline: wgpu::RenderPipeline,
+    pipeline_layout: Arc<wgpu::PipelineLayout>, // Wrapped in Arc
+    
     uniform_buffer: wgpu::Buffer,
-    scene_buffer: wgpu::Buffer, // Now a UBO
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
     log_path: PathBuf, 
+    
+    pipeline_rx: mpsc::Receiver<wgpu::RenderPipeline>,
+    pipeline_tx: mpsc::Sender<wgpu::RenderPipeline>,
 }
 
 impl<'a> Renderer<'a> {
     pub async fn new(window: Arc<Window>, log_path: PathBuf) -> Result<Self> {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-        
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
@@ -51,12 +52,12 @@ impl<'a> Renderer<'a> {
         }).await.context("Failed to find wgpu adapter")?;
 
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None).await?;
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats[0];
+        let device = Arc::new(device); // Convert device to Arc
         
+        let surface_caps = surface.get_capabilities(&adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
+            format: surface_caps.formats[0],
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -71,8 +72,7 @@ impl<'a> Renderer<'a> {
             time: 0.0,
             camera_dist: 20.0,
             rotation: [0.4, 0.0],
-            inst_count: 0.0,
-            padding2: 0.0,
+            padding: [0.0, 0.0],
             target_pos: [0.0, 0.0, 0.0, 0.0], 
         };
 
@@ -82,71 +82,52 @@ impl<'a> Renderer<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // 16 KB UBO Buffer (Exactly 1024 vec4s)
-        let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Scene UBO"),
-            size: 16384, 
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // Changed from STORAGE
-            mapped_at_creation: false,
-        });
-
-        // Write a single OP_HALT vec4 immediately to avoid reading garbage memory
-        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[0.0f32; 4]));
-
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                // Update binding 1 to be a Uniform buffer instead of Storage
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform, 
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ],
+                count: None,
+            }],
             label: None,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: scene_buffer.as_entire_binding(),
-                }
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
             label: None,
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = Arc::new(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
-        });
+        })); // Convert to Arc
 
-        let render_pipeline = shader::create_pipeline(&device, &pipeline_layout, config.format)?;
+        let (pipeline_tx, pipeline_rx) = mpsc::channel();
+
+        shader::compile_pipeline_async(
+            device.clone(),
+            pipeline_layout.clone(), 
+            config.format,
+            vec![0.0], 
+            pipeline_tx.clone()
+        );
+
+        let render_pipeline = pipeline_rx.recv().expect("Initial shader compilation failed");
 
         Ok(Self {
             surface, device, queue, config, size,
-            render_pipeline, uniform_buffer, scene_buffer,
+            render_pipeline, pipeline_layout, uniform_buffer,
             bind_group, uniforms, start_time: Instant::now(), log_path,
+            pipeline_rx, pipeline_tx
         })
     }
 
@@ -171,15 +152,21 @@ impl<'a> Renderer<'a> {
         self.uniforms.camera_dist = camera.dist;
         self.uniforms.rotation = [camera.pitch, camera.yaw];
         self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0]; 
-        
-        // This will write all uniforms, including the newly updated inst_count
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
+        
+        if let Ok(new_pipeline) = self.pipeline_rx.try_recv() {
+            self.render_pipeline = new_pipeline;
+        }
     }
 
-    // Now accepts `&mut self` so it can update the instruction count
-    pub fn update_scene(&mut self, instructions: &[f32]) {
-        self.uniforms.inst_count = (instructions.len() / 4) as f32; // Set instruction count for the loop bound
-        self.queue.write_buffer(&self.scene_buffer, 0, bytemuck::cast_slice(instructions));
+    pub fn update_scene(&mut self, bytecode: Vec<f32>) {
+        shader::compile_pipeline_async(
+            self.device.clone(),
+            self.pipeline_layout.clone(),
+            self.config.format,
+            bytecode,
+            self.pipeline_tx.clone()
+        );
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

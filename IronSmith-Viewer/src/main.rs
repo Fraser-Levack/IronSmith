@@ -35,7 +35,7 @@ fn setup_panic_logger() {
 async fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;
     let window = Arc::new(WindowBuilder::new()
-        .with_title("IronSmith Forge (SSBO Live)")
+        .with_title("IronSmith Forge (JIT Compiler)")
         .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
         .build(&event_loop)?);
 
@@ -64,20 +64,18 @@ async fn run() -> Result<()> {
                 WindowEvent::RedrawRequested => {
                     let mut latest_bytecode = None;
                     
-                    // Route TCP messages
                     for msg in network::drain_sockets(&listener) {
                         match msg {
                             NetMessage::Command(cmd) => camera.process_command(&cmd),
-                            NetMessage::Bytecode(code) => latest_bytecode = Some(code), // Catch the bytes
+                            NetMessage::Bytecode(code) => latest_bytecode = Some(code), 
                         }
                     }
                     
-                    // If Haskell sent us a new scene, instantly overwrite the GPU Buffer!
+                    // FIX: Pass ownership by removing the `&`
                     if let Some(bytecode) = latest_bytecode {
-                        renderer.update_scene(&bytecode);
+                        renderer.update_scene(bytecode);
                     }
                     
-                    // Update Camera and Render
                     camera.update_lerp();
                     renderer.update(&camera);
                     
