@@ -47,6 +47,7 @@ resolveColor ('#':hexStr) | length hexStr == 6 =
 resolveColor _ = [0.8, 0.4, 0.1] -- Default Forge Orange
 
 -- | THE POSTFIX COMPILER (Vec4 Packed for GPU Memory Banwidth)
+-- | THE POSTFIX COMPILER (Pre-baked Math & Vec4 Packed)
 compileShape :: Env -> Float -> Shape -> [Float]
 compileShape env mat shape = case shape of
     
@@ -84,21 +85,30 @@ compileShape env mat shape = case shape of
         let x = evalExpr env ex; y = evalExpr env ey; z = evalExpr env ez
         in [24.0, x, y, z] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
         
+    -- PRE-BAKED TRIGONOMETRY: GPU no longer calculates sin/cos
     RotateX edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-        in [20.0, rads, 0.0, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+            c = cos rads; s = sin rads
+        in [20.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
 
     RotateY edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-        in [21.0, rads, 0.0, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+            c = cos rads; s = sin rads
+        in [21.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
 
     RotateZ edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-        in [22.0, rads, 0.0, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+            c = cos rads; s = sin rads
+        in [22.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
 
+    -- PRE-BAKED DIVISION: GPU now uses fast multiplication
     Scale ex ey ez innerShape ->
         let sx = evalExpr env ex; sy = evalExpr env ey; sz = evalExpr env ez
-        in [23.0, sx, sy, sz] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+            min_s = min sx (min sy sz)
+            isx = if sx == 0 then 0 else 1.0 / sx
+            isy = if sy == 0 then 0 else 1.0 / sy
+            isz = if sz == 0 then 0 else 1.0 / sz
+        in [23.0, isx, isy, isz, min_s, 0.0, 0.0, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
 
     Repeat ex ey ez innerShape ->
         let cx = evalExpr env ex; cy = evalExpr env ey; cz = evalExpr env ez

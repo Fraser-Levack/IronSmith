@@ -16,7 +16,8 @@ pub struct ShaderUniforms {
     pub time: f32,
     pub camera_dist: f32,
     pub rotation: [f32; 2], 
-    pub padding: [f32; 2],
+    pub inst_count: f32, // Replaced padding with instruction count
+    pub padding2: f32,
     pub target_pos: [f32; 4],
 }
 
@@ -28,7 +29,7 @@ pub struct Renderer<'a> {
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
-    scene_buffer: wgpu::Buffer, // NEW: Our SSBO buffer!
+    scene_buffer: wgpu::Buffer, // Now a UBO
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
@@ -70,7 +71,8 @@ impl<'a> Renderer<'a> {
             time: 0.0,
             camera_dist: 20.0,
             rotation: [0.4, 0.0],
-            padding: [0.0, 0.0],
+            inst_count: 0.0,
+            padding2: 0.0,
             target_pos: [0.0, 0.0, 0.0, 0.0], 
         };
 
@@ -80,17 +82,16 @@ impl<'a> Renderer<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // FIX: Create a massive 64KB buffer (holds ~16,000 float instructions)
+        // 16 KB UBO Buffer (Exactly 1024 vec4s)
         let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Scene SSBO"),
-            size: 65536, // 64 KB
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label: Some("Scene UBO"),
+            size: 16384, 
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // Changed from STORAGE
             mapped_at_creation: false,
         });
 
-        // Write a single OP_HALT (0.0) float to it immediately so the GPU doesn't crash 
-        // trying to read empty garbage memory before Haskell connects!
-        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[0.0f32]));
+        // Write a single OP_HALT vec4 immediately to avoid reading garbage memory
+        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[0.0f32; 4]));
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
@@ -104,12 +105,12 @@ impl<'a> Renderer<'a> {
                     },
                     count: None,
                 },
-                // NEW: Add the Storage Buffer to the Layout
+                // Update binding 1 to be a Uniform buffer instead of Storage
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ty: wgpu::BufferBindingType::Uniform, 
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -126,7 +127,6 @@ impl<'a> Renderer<'a> {
                     binding: 0,
                     resource: uniform_buffer.as_entire_binding(),
                 },
-                // NEW: Bind the Scene SSBO
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: scene_buffer.as_entire_binding(),
@@ -141,7 +141,6 @@ impl<'a> Renderer<'a> {
             push_constant_ranges: &[],
         });
 
-        // Create the pipeline using the static shader
         let render_pipeline = shader::create_pipeline(&device, &pipeline_layout, config.format)?;
 
         Ok(Self {
@@ -172,11 +171,14 @@ impl<'a> Renderer<'a> {
         self.uniforms.camera_dist = camera.dist;
         self.uniforms.rotation = [camera.pitch, camera.yaw];
         self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0]; 
+        
+        // This will write all uniforms, including the newly updated inst_count
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
     }
 
-    // NEW: Instantly overwrites the SSBO in GPU memory with the new AST instructions
-    pub fn update_scene(&self, instructions: &[f32]) {
+    // Now accepts `&mut self` so it can update the instruction count
+    pub fn update_scene(&mut self, instructions: &[f32]) {
+        self.uniforms.inst_count = (instructions.len() / 4) as f32; // Set instruction count for the loop bound
         self.queue.write_buffer(&self.scene_buffer, 0, bytemuck::cast_slice(instructions));
     }
 
