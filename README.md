@@ -129,8 +129,6 @@ IronSmith is an open-source forge, and contributions of any size are highly appr
 
 ## ✨ Contributors
 
-A massive thank you to everyone who has helped build the Forge!
-
 * **Fraser W Levack** - *Creator & Lead Developer* - [@Fraser-Levack](https://github.com/Fraser-Levack)
 
 *(Want to see your name here? Check out the section and open a PR!)*
