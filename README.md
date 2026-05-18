@@ -80,6 +80,14 @@ difference(
 )
 ```
 
+## Recently Made Demo models
+
+![Castle Demo](./saved_model_milestones/demo_photos/DemoCastle.png)
+
+![Quater Pipe Demo](./saved_model_milestones/demo_photos/QuaterPipeRamp.png)
+
+![Chicken Demo](./saved_model_milestones/demo_photos/Chicken.png)
+
 ## 🗺️ Roadmap / Future Work
 [x] Basic primitive parsing and rendering
 
@@ -89,7 +97,7 @@ difference(
 
 [x] Free-flight camera controls
 
-[ ] Material and color parsing
+[x] Material and color parsing
 
 [ ] Exporting generated SDFs to .obj or .stl meshes
 
