@@ -80,7 +80,7 @@ difference(
 )
 ```
 
-## Recently Made Demo models
+## 🚩 Recently Made Demo models
 
 ![Castle Demo](./saved_model_milestones/demo_photos/DemoCastle.png)
 
