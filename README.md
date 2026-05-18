@@ -82,13 +82,12 @@ difference(
 
 ## 🚩 Recently Made Demo models
 
-![Castle Demo](./saved_model_milestones/demo_photos/DemoCastle.png)
-
-![Quater Pipe Demo](./saved_model_milestones/demo_photos/QuaterPipeRamp.png)
-
-![Chicken Demo](./saved_model_milestones/demo_photos/Chicken.png)
-
-![Skull Demo](./saved_model_milestones/demo_photos/Skull.png)
+<p align="center">
+  <img src="./saved_model_milestones/demo_photos/DemoCastle.png" alt="Castle Demo" height="200" />
+  <img src="./saved_model_milestones/demo_photos/QuaterPipeRamp.png" alt="Quater Pipe Demo" height="200" />
+  <img src="./saved_model_milestones/demo_photos/Chicken.png" alt="Chicken Demo" height="200" />
+  <img src="./saved_model_milestones/demo_photos/Skull.png" alt="Skull Demo" height="200" />
+</p>
 
 ## 🗺️ Roadmap / Future Work
 [x] Basic primitive parsing and rendering
