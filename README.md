@@ -88,6 +88,8 @@ difference(
 
 ![Chicken Demo](./saved_model_milestones/demo_photos/Chicken.png)
 
+![Skull Demo](./saved_model_milestones/demo_photos/Skull.png)
+
 ## 🗺️ Roadmap / Future Work
 [x] Basic primitive parsing and rendering
 
