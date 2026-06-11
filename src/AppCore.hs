@@ -14,6 +14,7 @@ import Text.Megaparsec.Pos (sourceLine, unPos)
 import AST
 import Parser
 import Evaluator
+import Config
 
 import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, StdStream(CreatePipe), terminateProcess)
 
@@ -61,6 +62,11 @@ getDemoPath = do
     dir <- getConfigDir
     return (dir </> "demo.irsm")
 
+getConfigPath :: IO FilePath
+getConfigPath = do
+    dir <- getConfigDir
+    return (dir </> "ironsmith.toml")
+
 loadRecents :: IO [FilePath]
 loadRecents = do
     cachePath <- getCachePath
@@ -100,6 +106,19 @@ sendNetworkData bytes = do
             close sock
             ) (\(e :: SomeException) -> return ())
     return ()
+
+sendConfig :: IronConfig -> IO ()
+sendConfig cfg = do
+    -- Background colour
+    sendCommand (bgColorToCmd (cfgBgColor cfg))
+    -- Camera distance
+    sendCommand ("CMD:SET_CAMERA_DIST:" ++ show (cfgDefaultCameraDist cfg))
+    -- Auto orbit
+    sendCommand (if cfgAutoOrbit cfg then "CMD:OrbitMode" else "CMD:StaticMode")
+    -- Shadow toggle
+    sendCommand (if cfgShadowEnabled cfg then "CMD:SHADOW_ON" else "CMD:SHADOW_OFF")
+    -- March steps
+    sendCommand ("CMD:SET_MARCH_STEPS:" ++ show (cfgMarchSteps cfg))
 
 
 -- | COMPILER BRIDGE

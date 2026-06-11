@@ -17,8 +17,10 @@ pub struct ShaderUniforms {
     pub time: f32,
     pub camera_dist: f32,
     pub rotation: [f32; 2], 
-    pub padding: [f32; 2],
+    pub shadow_enabled: f32,  // was padding[0], reused
+    pub march_steps: f32,     // was padding[1], reused
     pub target_pos: [f32; 4],
+    pub bg_color: [f32; 4],   // NEW: rgb + unused w, added at end
 }
 
 pub struct Renderer<'a> {
@@ -72,8 +74,10 @@ impl<'a> Renderer<'a> {
             time: 0.0,
             camera_dist: 20.0,
             rotation: [0.4, 0.0],
-            padding: [0.0, 0.0],
-            target_pos: [0.0, 0.0, 0.0, 0.0], 
+            shadow_enabled: 1.0,
+            march_steps: 150.0,
+            target_pos: [0.0, 0.0, 0.0, 0.0],
+            bg_color: [0.02, 0.02, 0.05, 0.0],
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -151,7 +155,10 @@ impl<'a> Renderer<'a> {
         self.uniforms.resolution = [self.size.width as f32, self.size.height as f32];
         self.uniforms.camera_dist = camera.dist;
         self.uniforms.rotation = [camera.pitch, camera.yaw];
-        self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0]; 
+        self.uniforms.shadow_enabled = if camera.shadow_enabled { 1.0 } else { 0.0 };
+        self.uniforms.march_steps = camera.march_steps as f32;
+        self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0];
+        self.uniforms.bg_color = [camera.bg_color[0], camera.bg_color[1], camera.bg_color[2], 0.0];
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
         
         if let Ok(new_pipeline) = self.pipeline_rx.try_recv() {

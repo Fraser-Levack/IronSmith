@@ -11,13 +11,13 @@ import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit) -- Required for the 
 
 import AppState
 
-drawUI :: AppState -> [Widget Name]
 drawUI st = case _mode st of
     Splash        -> [drawSplash st]
     Editing       -> [drawEditor st]
     SaveDialog    -> [drawSaveDialog st] 
     OpenDialog    -> [drawOpenDialog st]
     UnsavedPrompt -> [drawUnsavedPrompt st]
+    ConfigEditing -> [drawConfigEditor st]
 
 drawSplash :: AppState -> Widget Name
 drawSplash st = 
@@ -42,6 +42,8 @@ drawSplash st =
 
     commandsWidget = vBox
         [ withAttr (attrName "success") $ str "[ Press ENTER for New File | Press 'O' to Open File ]"
+        , str " "
+        , withAttr (attrName "title") $ str "[ Press 'G' to open Settings ]"
         , str " "
         , str "[ Press ESC to Quit ]"
         ]
@@ -105,7 +107,7 @@ drawEditor st = ui
          $ vBox
              [ padAll 1 codeWidget
              , hBorder
-             , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget] 
+             , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget, str]
              ]
 
 drawUnsavedPrompt :: AppState -> Widget Name
@@ -140,6 +142,20 @@ drawOpenDialog st = center $ borderWithLabel (str " Open File ") $ padAll 2 $ vB
     , withAttr (attrName "success") $ str "[ Press ENTER to open ]"
     , withAttr (attrName "error")   $ str "[ Press ESC to cancel ]"
     ]
+
+drawConfigEditor :: AppState -> Widget Name
+drawConfigEditor st =
+    withBorderStyle unicode $
+    borderWithLabel (str " IronSmith Settings (ironsmith.toml) ") $
+    vBox
+        [ padAll 1 $ E.renderEditor (vBox . map str) True (_configInput st)
+        , hBorder
+        , padAll 1 $ hBox
+            [ withAttr (attrName "success") $ str "Ctrl+S: Save & Apply"
+            , str "  |  "
+            , withAttr (attrName "error")   $ str "ESC: Discard"
+            ]
+        ]
 
 -- | SYNTAX HIGHLIGHTING LEXER
 tokenize :: String -> [Widget Name]

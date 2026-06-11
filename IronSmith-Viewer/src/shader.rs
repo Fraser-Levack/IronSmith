@@ -8,8 +8,10 @@ layout(set = 0, binding = 0) uniform Uniforms {
     float u_time;
     float u_camera_dist;
     vec2 u_rotation; 
-    vec2 _padding; 
+    float u_shadow_enabled;
+    float u_march_steps;
     vec4 u_target_pos; 
+    vec4 u_bg_color;
 };
 
 layout(location = 0) out vec4 out_color;
@@ -88,7 +90,8 @@ void main() {
         float t_out = -b + sqrt(h); 
         t = max(0.0, -b - sqrt(h));
 
-        for(int i = 0; i < 150; i++) { 
+        int _max_steps = int(u_march_steps);
+        for(int i = 0; i < _max_steps; i++) {
             if(t > t_out) break; 
             vec3 p = ro + rd * t; Hit res = map(p);
             if(res.d < max(0.001, 0.0002 * t)) { material_col = res.col; material_id = res.mat; hit = true; break; }
@@ -96,13 +99,13 @@ void main() {
         }
     }
 
-    vec3 bg_color = vec3(0.02, 0.02, 0.05); vec3 col = bg_color;
+    vec3 bg_color = u_bg_color.rgb; vec3 col = bg_color;
     vec3 light_dir = normalize(-ww + uu * 0.4 + vv * 0.6);
     
     if(hit) {
         vec3 pos = ro + rd * t; vec3 normal = calcNormal(pos); vec3 view_dir = normalize(ro - pos);
         
-        float shadow = calcShadow(pos, light_dir, 0.05, 20.0, 12.0); 
+        float shadow = u_shadow_enabled > 0.5 ? calcShadow(pos, light_dir, 0.05, 20.0, 12.0) : 1.0; 
 
         if (material_id == 0) { 
             col = material_col * max(dot(normal, light_dir), 0.0) * shadow + material_col * 0.1; 

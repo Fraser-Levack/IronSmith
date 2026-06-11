@@ -6,8 +6,10 @@ import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
 import Graphics.Vty.CrossPlatform (mkVty)
 import System.Directory (doesFileExist)
+import Control.Concurrent (threadDelay)
 
 import AppState
+import Config (loadConfig, defaultConfig)
 import AppCore
 import AppUI
 import AppEvents
@@ -35,6 +37,9 @@ app chan = App
 main :: IO ()
 main = do
     recents <- loadRecents
+    configPath <- getConfigPath
+    cfg <- loadConfig configPath    -- NEW: loads or creates ironsmith.toml
+    
     demoPath <- getDemoPath
     demoExists <- doesFileExist demoPath
     
@@ -49,7 +54,10 @@ main = do
     
     h <- launchViewer
     
-    -- NEW: Create the bounded channel
+    -- Small delay to let viewer open its TCP socket before we send config
+    Control.Concurrent.threadDelay 500000  -- 0.5 seconds
+    sendConfig cfg                          -- NEW: send config to viewer
+    
     chan <- newBChan 10
     
     let initialState = AppState
@@ -58,12 +66,14 @@ main = do
             , _editor       = E.editor CodeEditor Nothing "" 
             , _saveInput    = E.editor SaveEditor (Just 1) "" 
             , _openInput    = E.editor OpenEditor (Just 1) ""
+            , _configInput  = E.editor ConfigEditor Nothing ""  -- NEW
             , _currentFile  = Nothing
             , _recentFiles  = recents
             , _status       = Normal
             , _isDirty      = False
             , _viewerHandle = Just h 
-            , _editVersion  = 0 -- NEW: Start at 0
+            , _editVersion  = 0
+            , _config       = cfg                               -- NEW
             }
             
     -- NEW: Boot up customMain instead of defaultMain

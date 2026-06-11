@@ -10,6 +10,7 @@ executable ironsmith
     other-modules:    AST, 
                       Parser, 
                       Evaluator,
+                      Config,
                       AppState,
                       AppCore,
                       AppUI,

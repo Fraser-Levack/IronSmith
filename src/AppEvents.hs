@@ -12,6 +12,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import System.Directory (doesFileExist)
 
 import AppState
+import Config (loadConfig, defaultConfigText)
 import AppCore
 
 -- | GLOBAL ROUTER
@@ -38,6 +39,7 @@ handleEvent chan ev = do
         SaveDialog    -> handleSaveDialog chan ev
         OpenDialog    -> handleOpenDialog chan ev
         UnsavedPrompt -> handleUnsavedPrompt chan ev
+        ConfigEditing -> handleConfigEditing chan ev
 
 -- | 1. SPLASH SCREEN
 handleSplash :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
@@ -48,6 +50,16 @@ handleSplash _ (VtyEvent (V.EvKey V.KEnter [])) = do
 handleSplash _ (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+handleSplash _ (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
+    st <- get
+    configPath <- liftIO getConfigPath
+    exists <- liftIO $ doesFileExist configPath
+    content <- if exists
+                   then liftIO $ readFile configPath
+                   else return defaultConfigText
+    put (st { _mode = ConfigEditing
+            , _configInput = E.editor ConfigEditor Nothing content
+            })
 handleSplash _ (VtyEvent (V.EvKey (V.KChar c) [])) 
     | c `elem` ['1'..'5'] = do
         st <- get
@@ -92,6 +104,17 @@ handleEditing _ (VtyEvent (V.EvKey (V.KChar 'r') [V.MCtrl])) = do
     liftIO $ sendCommand "CMD:RESET_CAMERA"
     -- No state changes needed, just fire and forget
     return ()
+
+handleEditing _ (VtyEvent (V.EvKey (V.KChar 'g') [V.MCtrl])) = do
+    st <- get
+    configPath <- liftIO getConfigPath
+    exists <- liftIO $ doesFileExist configPath
+    content <- if exists
+                   then liftIO $ readFile configPath
+                   else return defaultConfigText
+    put (st { _mode = ConfigEditing
+            , _configInput = E.editor ConfigEditor Nothing content
+            })
 
 handleEditing _ (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
     st <- get
@@ -265,3 +288,29 @@ handleOpenDialog _ (VtyEvent (V.EvKey V.KEnter [])) = do
 
 handleOpenDialog _ ev = do
     zoom openInputLens $ E.handleEditorEvent ev
+
+-- | 6. CONFIG EDITOR
+handleConfigEditing :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
+
+-- ESC: discard changes, go back
+handleConfigEditing _ (VtyEvent (V.EvKey V.KEsc [])) = do
+    st <- get
+    let prevMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""]
+                   then Splash else Editing
+    put (st { _mode = prevMode })
+
+-- Ctrl+S: save the config file, reload config, send to viewer
+handleConfigEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
+    st <- get
+    let content = unlines $ E.getEditContents (_configInput st)
+    configPath <- liftIO getConfigPath
+    liftIO $ writeFile configPath content
+    newConfig <- liftIO $ loadConfig configPath
+    liftIO $ sendConfig newConfig
+    let prevMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""]
+                   then Splash else Editing
+    put (st { _mode = prevMode, _config = newConfig, _status = Saved })
+
+-- Everything else: pass through to the editor widget
+handleConfigEditing _ ev = do
+    zoom configInputLens $ E.handleEditorEvent ev

@@ -14,63 +14,95 @@ pub struct Camera {
     target_pan_z: f32,
 
     pub auto_orbit: bool,
+
+    // NEW config fields
+    pub bg_color: [f32; 3],
+    pub shadow_enabled: bool,
+    pub march_steps: i32,
 }
 
 impl Camera {
     pub fn new() -> Self {
-        Self {
-            yaw: 0.0, pitch: 0.4, dist: 20.0,
-            pan_x: 0.0, pan_y: 0.0, pan_z: 0.0,
-            target_yaw: 0.0, target_pitch: 0.4, target_dist: 20.0,
-            target_pan_x: 0.0, target_pan_y: 0.0, target_pan_z: 0.0,
-            auto_orbit: true,
-        }
+    Self {
+        yaw: 0.0, pitch: 0.4, dist: 20.0,
+        pan_x: 0.0, pan_y: 0.0, pan_z: 0.0,
+        target_yaw: 0.0, target_pitch: 0.4, target_dist: 20.0,
+        target_pan_x: 0.0, target_pan_y: 0.0, target_pan_z: 0.0,
+        auto_orbit: true,
+        // NEW
+        bg_color: [0.02, 0.02, 0.05],
+        shadow_enabled: true,
+        march_steps: 150,
     }
+}
 
     pub fn process_command(&mut self, cmd: &str) {
-        match cmd {
-            "CMD:OrbitMode"  => self.auto_orbit = true,
-            "CMD:StaticMode" => self.auto_orbit = false,
-            "CMD:FlyMode"    => self.auto_orbit = false, 
-            
-            "CMD:PITCH_UP"   => self.target_pitch += 0.1,
-            "CMD:PITCH_DOWN" => self.target_pitch -= 0.1,
-            "CMD:YAW_LEFT"   => self.target_yaw -= 0.1,
-            "CMD:YAW_RIGHT"  => self.target_yaw += 0.1,
-            
-            "CMD:ZOOM_IN"    => self.target_dist = (self.target_dist - 2.0).clamp(2.0, 100.0),
-            "CMD:ZOOM_OUT"   => self.target_dist = (self.target_dist + 2.0).clamp(2.0, 100.0),
-            
-            "CMD:PAN_FORWARD" => {
-                self.target_pan_x -= self.target_yaw.sin() * 0.5;
-                self.target_pan_z -= self.target_yaw.cos() * 0.5;
-            },
-            "CMD:PAN_BACKWARD" => {
-                self.target_pan_x += self.target_yaw.sin() * 0.5;
-                self.target_pan_z += self.target_yaw.cos() * 0.5;
-            },
-            "CMD:PAN_LEFT" => {
-                self.target_pan_x -= self.target_yaw.cos() * 0.5;
-                self.target_pan_z += self.target_yaw.sin() * 0.5;
-            },
-            "CMD:PAN_RIGHT" => {
-                self.target_pan_x += self.target_yaw.cos() * 0.5;
-                self.target_pan_z -= self.target_yaw.sin() * 0.5;
-            },
-            "CMD:PAN_UP"   => self.target_pan_y += 0.5,
-            "CMD:PAN_DOWN" => self.target_pan_y -= 0.5,
+    match cmd {
+        "CMD:OrbitMode"  => self.auto_orbit = true,
+        "CMD:StaticMode" => self.auto_orbit = false,
+        "CMD:FlyMode"    => self.auto_orbit = false, 
+        
+        "CMD:PITCH_UP"   => self.target_pitch += 0.1,
+        "CMD:PITCH_DOWN" => self.target_pitch -= 0.1,
+        "CMD:YAW_LEFT"   => self.target_yaw -= 0.1,
+        "CMD:YAW_RIGHT"  => self.target_yaw += 0.1,
+        
+        "CMD:ZOOM_IN"    => self.target_dist = (self.target_dist - 2.0).clamp(2.0, 100.0),
+        "CMD:ZOOM_OUT"   => self.target_dist = (self.target_dist + 2.0).clamp(2.0, 100.0),
+        
+        "CMD:PAN_FORWARD" => {
+            self.target_pan_x -= self.target_yaw.sin() * 0.5;
+            self.target_pan_z -= self.target_yaw.cos() * 0.5;
+        },
+        "CMD:PAN_BACKWARD" => {
+            self.target_pan_x += self.target_yaw.sin() * 0.5;
+            self.target_pan_z += self.target_yaw.cos() * 0.5;
+        },
+        "CMD:PAN_LEFT" => {
+            self.target_pan_x -= self.target_yaw.cos() * 0.5;
+            self.target_pan_z += self.target_yaw.sin() * 0.5;
+        },
+        "CMD:PAN_RIGHT" => {
+            self.target_pan_x += self.target_yaw.cos() * 0.5;
+            self.target_pan_z -= self.target_yaw.sin() * 0.5;
+        },
+        "CMD:PAN_UP"   => self.target_pan_y += 0.5,
+        "CMD:PAN_DOWN" => self.target_pan_y -= 0.5,
 
-            "CMD:RESET_CAMERA" => {
-                self.target_yaw = 0.0;
-                self.target_pitch = 0.4;
-                self.target_dist = 20.0;
-                self.target_pan_x = 0.0;
-                self.target_pan_y = 0.0;
-                self.target_pan_z = 0.0;
-            },
-            _ => {}
+        "CMD:RESET_CAMERA" => {
+            self.target_yaw = 0.0;
+            self.target_pitch = 0.4;
+            self.target_dist = 20.0;
+            self.target_pan_x = 0.0;
+            self.target_pan_y = 0.0;
+            self.target_pan_z = 0.0;
+        },
+
+        "CMD:SHADOW_ON"  => self.shadow_enabled = true,
+        "CMD:SHADOW_OFF" => self.shadow_enabled = false,
+
+        _ => {
+            if cmd.starts_with("CMD:SET_BG:") {
+                let parts: Vec<f32> = cmd["CMD:SET_BG:".len()..]
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if parts.len() == 3 {
+                    self.bg_color = [parts[0], parts[1], parts[2]];
+                }
+            } else if cmd.starts_with("CMD:SET_CAMERA_DIST:") {
+                if let Ok(d) = cmd["CMD:SET_CAMERA_DIST:".len()..].trim().parse::<f32>() {
+                    self.target_dist = d;
+                    self.dist = d;
+                }
+            } else if cmd.starts_with("CMD:SET_MARCH_STEPS:") {
+                if let Ok(n) = cmd["CMD:SET_MARCH_STEPS:".len()..].trim().parse::<i32>() {
+                    self.march_steps = n;
+                }
+            }
         }
     }
+}
 
     pub fn scroll_zoom(&mut self, y_delta: f32) {
         self.target_dist = (self.target_dist - y_delta * 2.0).clamp(2.0, 100.0);
