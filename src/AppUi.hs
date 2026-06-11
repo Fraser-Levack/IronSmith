@@ -107,7 +107,7 @@ drawEditor st = ui
          $ vBox
              [ padAll 1 codeWidget
              , hBorder
-             , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget, str]
+             , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget]
              ]
 
 drawUnsavedPrompt :: AppState -> Widget Name
