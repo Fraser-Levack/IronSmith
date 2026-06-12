@@ -10,9 +10,12 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Control.Concurrent (forkIO, threadDelay)
 import System.Directory (doesFileExist, makeAbsolute)
+import Data.Char (isDigit, toLower)
+import Data.List (sort)
+import Data.Maybe (listToMaybe)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor)
+import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, IronConfig)
 import AppCore
 
 -- | GLOBAL ROUTER
@@ -40,6 +43,7 @@ handleEvent chan ev = do
         OpenDialog    -> handleOpenDialog chan ev
         UnsavedPrompt -> handleUnsavedPrompt chan ev
         ConfigEditing -> handleConfigEditing chan ev
+        CommandPalette -> handleCommandPalette chan ev
 
 -- | 1. SPLASH SCREEN
 handleSplash :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
@@ -86,58 +90,36 @@ handleSplash _ _ = return ()
 handleEditing :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
 handleEditing _ (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
-    if _isDirty st 
+    if _isDirty st
         then put (st { _mode = UnsavedPrompt })
         else put (st { _mode = Splash })
 
--- CYCLE MODES (Ctrl+E)
-handleEditing _ (VtyEvent (V.EvKey (V.KChar 'e') [V.MCtrl])) = do
+-- COMMAND DISPATCH: check the incoming key against the configured
+-- keybindings (Ctrl+P, Ctrl+S, Ctrl+O, Ctrl+G, Ctrl+E, Ctrl+R by default).
+-- Anything that doesn't match falls through to FlyMode movement keys or
+-- normal editor typing.
+handleEditing chan brickEv@(VtyEvent ev@(V.EvKey key mods)) = do
     st <- get
-    let nextMode = case _viewerMode st of
-            OrbitMode  -> StaticMode
-            StaticMode -> FlyMode
-            FlyMode    -> OrbitMode
-    
-    liftIO $ sendCommand ("CMD:" ++ show nextMode)
-    put (st { _viewerMode = nextMode })
+    case lookupCommand (_config st) key mods of
+        Just cmdId -> runCommand chan cmdId
+        Nothing
+            | isMovementKey ev -> handleMovementKey chan brickEv ev
+            | otherwise         -> handleEditorInput chan brickEv
 
-handleEditing _ (VtyEvent (V.EvKey (V.KChar 'r') [V.MCtrl])) = do
-    liftIO $ sendCommand "CMD:RESET_CAMERA"
-    -- No state changes needed, just fire and forget
-    return ()
-
-handleEditing _ (VtyEvent (V.EvKey (V.KChar 'g') [V.MCtrl])) = do
-    st <- get
-    configPath <- liftIO getConfigPath
-    exists <- liftIO $ doesFileExist configPath
-    content <- if exists
-                   then liftIO $ readFileStrict configPath
-                   else return defaultConfigText
-    put (st { _mode = ConfigEditing
-            , _configInput = E.editor ConfigEditor Nothing content
-            })
-
-handleEditing _ (VtyEvent (V.EvKey (V.KChar 'o') [V.MCtrl])) = do
-    st <- get
-    put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
-
-handleEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
-    st <- get
-    case _currentFile st of
-        Just path -> do
-            let code = unlines $ E.getEditContents (_editor st)
-            liftIO $ writeFile path code
-            newErr <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True code
-            newRecents <- liftIO $ saveRecent path (_recentFiles st)
-            let newStatus = case newErr of
-                    Nothing -> Saved
-                    Just (e, lineNum) -> ErrorMsg e lineNum
-            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False })
-        Nothing -> 
-            put (st { _mode = SaveDialog })
+-- Catch-all for non-key events (resize, paste, etc.)
+handleEditing chan ev = handleEditorInput chan ev
 
 -- INTERCEPT MOVEMENT KEYS (For FlyMode)
-handleEditing chan brickEv@(VtyEvent ev) | isMovementKey ev = do
+isMovementKey :: V.Event -> Bool
+isMovementKey (V.EvKey V.KUp []) = True
+isMovementKey (V.EvKey V.KDown []) = True
+isMovementKey (V.EvKey V.KLeft []) = True
+isMovementKey (V.EvKey V.KRight []) = True
+isMovementKey (V.EvKey (V.KChar c) []) = c `elem` ['w', 'a', 's', 'd', 'z', 'x', 'W', 'A', 'S', 'D', 'Z', 'X']
+isMovementKey _ = False
+
+handleMovementKey :: BChan CustomEvent -> BrickEvent Name CustomEvent -> V.Event -> EventM Name AppState ()
+handleMovementKey chan brickEv ev = do
     st <- get
     if _viewerMode st == FlyMode
         then do
@@ -161,18 +143,106 @@ handleEditing chan brickEv@(VtyEvent ev) | isMovementKey ev = do
                         _                        -> ""
             liftIO $ sendCommand cmd
             return () -- Consumes the event so it doesn't type into the editor
-        else do
+        else
             handleEditorInput chan brickEv -- Passes it through to type normally
-  where
-    isMovementKey (V.EvKey V.KUp []) = True
-    isMovementKey (V.EvKey V.KDown []) = True
-    isMovementKey (V.EvKey V.KLeft []) = True
-    isMovementKey (V.EvKey V.KRight []) = True
-    isMovementKey (V.EvKey (V.KChar c) []) = c `elem` ['w', 'a', 's', 'd', 'z', 'x', 'W', 'A', 'S', 'D', 'Z', 'X']
-    isMovementKey _ = False
 
--- Catch-all for standard typing
-handleEditing chan ev = handleEditorInput chan ev
+-- | KEY-COMBO PARSING
+--   Parses strings like "ctrl+p" or "ctrl+shift+p" into a Vty key + modifiers.
+parseKeyCombo :: String -> Maybe (V.Key, [V.Modifier])
+parseKeyCombo s =
+    case splitOnPlus (map toLower s) of
+        [] -> Nothing
+        parts -> do
+            mods <- mapM parseModifier (init parts)
+            key  <- parseKey (last parts)
+            return (key, mods)
+
+parseModifier :: String -> Maybe V.Modifier
+parseModifier "ctrl"  = Just V.MCtrl
+parseModifier "alt"   = Just V.MAlt
+parseModifier "meta"  = Just V.MMeta
+parseModifier "shift" = Just V.MShift
+parseModifier _       = Nothing
+
+parseKey :: String -> Maybe V.Key
+parseKey "esc"       = Just V.KEsc
+parseKey "enter"     = Just V.KEnter
+parseKey "tab"       = Just (V.KChar '\t')
+parseKey "space"     = Just (V.KChar ' ')
+parseKey "up"        = Just V.KUp
+parseKey "down"      = Just V.KDown
+parseKey "left"      = Just V.KLeft
+parseKey "right"     = Just V.KRight
+parseKey "backspace" = Just V.KBS
+parseKey "delete"    = Just V.KDel
+parseKey ('f':rest)
+    | not (null rest) && all isDigit rest = Just (V.KFun (read rest))
+parseKey [c] = Just (V.KChar c)
+parseKey _   = Nothing
+
+-- | Find the command (if any) bound to this key + modifier combination,
+--   based on the user's configured (or default) keybindings.
+lookupCommand :: IronConfig -> V.Key -> [V.Modifier] -> Maybe CommandId
+lookupCommand cfg key mods =
+    listToMaybe
+        [ cmdId
+        | cmdId <- [minBound .. maxBound]
+        , Just (k, m) <- [parseKeyCombo (keybindingFor cfg cmdId)]
+        , k == key, sort m == sort mods
+        ]
+
+-- | Run the action for a command, shared between keybinding dispatch and
+--   the command palette.
+runCommand :: BChan CustomEvent -> CommandId -> EventM Name AppState ()
+runCommand _ CmdCommandPalette = do
+    st <- get
+    put (st { _mode = CommandPalette
+            , _paletteInput = E.editor PaletteEditor (Just 1) ""
+            , _paletteSelected = 0
+            })
+
+runCommand _ CmdCycleViewMode = do
+    st <- get
+    let nextMode = case _viewerMode st of
+            OrbitMode  -> StaticMode
+            StaticMode -> FlyMode
+            FlyMode    -> OrbitMode
+    liftIO $ sendCommand ("CMD:" ++ show nextMode)
+    put (st { _viewerMode = nextMode })
+
+runCommand _ CmdResetCamera = do
+    liftIO $ sendCommand "CMD:RESET_CAMERA"
+    return ()
+
+runCommand _ CmdSettings = do
+    st <- get
+    configPath <- liftIO getConfigPath
+    exists <- liftIO $ doesFileExist configPath
+    content <- if exists
+                   then liftIO $ readFileStrict configPath
+                   else return defaultConfigText
+    put (st { _mode = ConfigEditing
+            , _configInput = E.editor ConfigEditor Nothing content
+            })
+
+runCommand _ CmdOpenFile = do
+    st <- get
+    put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+
+runCommand _ CmdSave = do
+    st <- get
+    case _currentFile st of
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+            liftIO $ writeFile path code
+            newErr <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True code
+            newRecents <- liftIO $ saveRecent path (_recentFiles st)
+            let newStatus = case newErr of
+                    Nothing -> Saved
+                    Just (e, lineNum) -> ErrorMsg e lineNum
+            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False })
+        Nothing ->
+            put (st { _mode = SaveDialog })
 
 -- | HELPER: Runs standard editor inputs and triggers compilation
 handleEditorInput :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
@@ -317,3 +387,36 @@ handleConfigEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
 -- Everything else: pass through to the editor widget
 handleConfigEditing _ ev = do
     zoom configInputLens $ E.handleEditorEvent ev
+
+-- | 7. COMMAND PALETTE
+handleCommandPalette :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
+handleCommandPalette _ (VtyEvent (V.EvKey V.KEsc [])) = do
+    st <- get
+    put (st { _mode = Editing })
+
+handleCommandPalette _ (VtyEvent (V.EvKey V.KUp [])) = do
+    st <- get
+    let count = length (filteredCommands st)
+    when (count > 0) $
+        put (st { _paletteSelected = (_paletteSelected st - 1) `mod` count })
+
+handleCommandPalette _ (VtyEvent (V.EvKey V.KDown [])) = do
+    st <- get
+    let count = length (filteredCommands st)
+    when (count > 0) $
+        put (st { _paletteSelected = (_paletteSelected st + 1) `mod` count })
+
+handleCommandPalette chan (VtyEvent (V.EvKey V.KEnter [])) = do
+    st <- get
+    case drop (_paletteSelected st) (filteredCommands st) of
+        (cmdId:_) -> do
+            put (st { _mode = Editing })
+            runCommand chan cmdId
+        [] -> put (st { _mode = Editing })
+
+-- Everything else: pass through to the filter input, and reset the
+-- selection since the filtered list may have changed.
+handleCommandPalette _ ev = do
+    zoom paletteInputLens $ E.handleEditorEvent ev
+    st <- get
+    put (st { _paletteSelected = 0 })

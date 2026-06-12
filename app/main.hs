@@ -34,6 +34,7 @@ app chan = App
         , (attrName "comment",  fg V.brightBlack)
         , (attrName "section",  fg (V.rgbColor 255 144 47) `V.withStyle` V.bold)
         , (attrName "key",      fg V.cyan `V.withStyle` V.bold)
+        , (attrName "selected", V.defAttr `V.withStyle` V.reverseVideo)
         ]
     }
 
@@ -70,6 +71,8 @@ main = do
             , _saveInput    = E.editor SaveEditor (Just 1) "" 
             , _openInput    = E.editor OpenEditor (Just 1) ""
             , _configInput  = E.editor ConfigEditor Nothing ""  -- NEW
+            , _paletteInput = E.editor PaletteEditor (Just 1) ""
+            , _paletteSelected = 0
             , _currentFile  = Nothing
             , _recentFiles  = recents
             , _status       = Normal

@@ -20,7 +20,22 @@ data IronConfig = IronConfig
     , cfgRestoreLastFile    :: Bool
     , cfgDefaultObjectColor :: (Float, Float, Float) -- default colour for unpainted shapes
     , cfgEditorLineWrap     :: Bool
+    , cfgKeybindings        :: [(String, String)] -- command id -> key combo, e.g. "save" -> "ctrl+s"
     } deriving (Show)
+
+-- | Rebindable commands and their default key combos.
+--   This is the single source of truth for both the generated
+--   [keybindings] section of the config file and the fallback used
+--   when a binding is missing or the file doesn't define it.
+defaultKeybindings :: [(String, String)]
+defaultKeybindings =
+    [ ("command_palette", "ctrl+p")
+    , ("save",            "ctrl+s")
+    , ("open_file",       "ctrl+o")
+    , ("settings",        "ctrl+g")
+    , ("cycle_view_mode",  "ctrl+e")
+    , ("reset_camera",     "ctrl+r")
+    ]
 
 -- | Sensible defaults matching the current hardcoded values
 defaultConfig :: IronConfig
@@ -36,11 +51,12 @@ defaultConfig = IronConfig
     , cfgRestoreLastFile    = False
     , cfgDefaultObjectColor = (0.8, 0.4, 0.1) -- Forge Orange
     , cfgEditorLineWrap     = False
+    , cfgKeybindings        = defaultKeybindings
     }
 
 -- | The default config file content (written on first run)
 defaultConfigText :: String
-defaultConfigText = unlines
+defaultConfigText = unlines $
     [ "# IronSmith Configuration"
     , "# Edit this file to customise your forge."
     , "# Restart IronSmith (or press Ctrl+G) for changes to take effect."
@@ -89,7 +105,16 @@ defaultConfigText = unlines
     , ""
     , "# Automatically re-open the last edited file on startup (true/false)"
     , "restore_last_file = false"
-    ]
+    , ""
+    , "[keybindings]"
+    , ""
+    , "# Customise the editor's keyboard shortcuts."
+    , "# Format: modifier+modifier+key, e.g. ctrl+p or ctrl+shift+p"
+    , "# Modifiers: ctrl, alt, shift"
+    , "# Keys: a single character, or one of:"
+    , "#   esc enter tab space up down left right"
+    , "#   backspace delete f1 .. f12"
+    ] ++ [ key ++ " = " ++ combo | (key, combo) <- defaultKeybindings ]
 
 -- ─── PARSER ──────────────────────────────────────────────────────────────────
 
@@ -142,6 +167,8 @@ parseConfig raw =
                                     (lookup "default_object_color" pairs >>= parseColor)
         , cfgEditorLineWrap     = fromMaybe (cfgEditorLineWrap defaultConfig)
                                     (lookup "editor_line_wrap" pairs >>= readMaybeBool)
+        , cfgKeybindings        = [ (cmdId, fromMaybe defaultCombo (lookup cmdId pairs))
+                                   | (cmdId, defaultCombo) <- defaultKeybindings ]
         }
 
 -- | Parse a single line into a (key, value) pair.

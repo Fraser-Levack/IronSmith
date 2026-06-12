@@ -14,10 +14,11 @@ import AppState
 drawUI st = case _mode st of
     Splash        -> [drawSplash st]
     Editing       -> [drawEditor st]
-    SaveDialog    -> [drawSaveDialog st] 
+    SaveDialog    -> [drawSaveDialog st]
     OpenDialog    -> [drawOpenDialog st]
     UnsavedPrompt -> [drawUnsavedPrompt st]
     ConfigEditing -> [drawConfigEditor st]
+    CommandPalette -> [drawCommandPalette st, drawEditor st]
 
 drawSplash :: AppState -> Widget Name
 drawSplash st = 
@@ -156,6 +157,30 @@ drawConfigEditor st =
             , withAttr (attrName "error")   $ str "ESC: Discard"
             ]
         ]
+
+drawCommandPalette :: AppState -> Widget Name
+drawCommandPalette st =
+    center $
+    withBorderStyle unicode $
+    borderWithLabel (str " Command Palette ") $
+    hLimit 60 $
+    vBox
+        [ padAll 1 $ vLimit 1 $ E.renderEditor (str . unlines) True (_paletteInput st)
+        , hBorder
+        , padAll 1 $ vBox (zipWith drawItem [0..] cmds)
+        , hBorder
+        , padAll 1 $ str "Up/Down: select | Enter: run | Esc: cancel"
+        ]
+  where
+    cmds = filteredCommands st
+    cfg  = _config st
+    drawItem :: Int -> CommandId -> Widget Name
+    drawItem i cmdId =
+        let row = padRight Max (str (commandLabel cmdId))
+                  <+> str (formatKeyCombo (keybindingFor cfg cmdId))
+        in if i == _paletteSelected st
+               then withAttr (attrName "selected") row
+               else row
 
 -- | Render a single line of the settings file with syntax highlighting.
 --   Empty lines are rendered as a single space, otherwise Brick collapses
