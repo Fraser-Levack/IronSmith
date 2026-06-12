@@ -18,6 +18,8 @@ data IronConfig = IronConfig
     , cfgDefaultMaterial    :: String
     , cfgLaunchViewerOnStart :: Bool
     , cfgRestoreLastFile    :: Bool
+    , cfgDefaultObjectColor :: (Float, Float, Float) -- default colour for unpainted shapes
+    , cfgEditorLineWrap     :: Bool
     } deriving (Show)
 
 -- | Sensible defaults matching the current hardcoded values
@@ -32,6 +34,8 @@ defaultConfig = IronConfig
     , cfgDefaultMaterial    = "matte"
     , cfgLaunchViewerOnStart = True
     , cfgRestoreLastFile    = False
+    , cfgDefaultObjectColor = (0.8, 0.4, 0.1) -- Forge Orange
+    , cfgEditorLineWrap     = False
     }
 
 -- | The default config file content (written on first run)
@@ -47,6 +51,11 @@ defaultConfigText = unlines
     , "# Use a hex colour (e.g. #0a0a1a) or three floats 0.0-1.0"
     , "# (e.g. 0.02, 0.02, 0.05)"
     , "background_color = #05050d"
+    , ""
+    , "# Default colour for shapes that aren't wrapped in paint(...)."
+    , "# Use a hex colour (e.g. #cc6619) or three floats 0.0-1.0"
+    , "# (e.g. 0.8, 0.4, 0.1)"
+    , "default_object_color = #cc6619"
     , ""
     , "# Starting camera distance from the origin"
     , "default_camera_dist = 20.0"
@@ -68,6 +77,10 @@ defaultConfigText = unlines
     , ""
     , "# Default material for new shapes (matte / plastic / neon / metal)"
     , "default_material = matte"
+    , ""
+    , "# Wrap long lines in the code editor instead of scrolling horizontally"
+    , "# (true/false). Not yet implemented - reserved for a future release."
+    , "editor_line_wrap = false"
     , ""
     , "[startup]"
     , ""
@@ -108,7 +121,7 @@ parseConfig raw =
     let pairs = mapMaybe parseLine (lines raw)
     in IronConfig
         { cfgBgColor            = fromMaybe (cfgBgColor defaultConfig)
-                                    (lookup "background_color" pairs >>= parseBgColor)
+                                    (lookup "background_color" pairs >>= parseColor)
         , cfgDefaultCameraDist  = fromMaybe (cfgDefaultCameraDist defaultConfig)
                                     (lookup "default_camera_dist" pairs >>= readMaybeFloat)
         , cfgAutoOrbit          = fromMaybe (cfgAutoOrbit defaultConfig)
@@ -125,6 +138,10 @@ parseConfig raw =
                                     (lookup "launch_viewer_on_start" pairs >>= readMaybeBool)
         , cfgRestoreLastFile    = fromMaybe (cfgRestoreLastFile defaultConfig)
                                     (lookup "restore_last_file" pairs >>= readMaybeBool)
+        , cfgDefaultObjectColor = fromMaybe (cfgDefaultObjectColor defaultConfig)
+                                    (lookup "default_object_color" pairs >>= parseColor)
+        , cfgEditorLineWrap     = fromMaybe (cfgEditorLineWrap defaultConfig)
+                                    (lookup "editor_line_wrap" pairs >>= readMaybeBool)
         }
 
 -- | Parse a single line into a (key, value) pair.
@@ -141,10 +158,10 @@ parseLine line =
 trim :: String -> String
 trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
 
--- | Parse a background colour value.
+-- | Parse a colour value.
 --   Accepts:  #rrggbb   or   r, g, b   (floats 0.0-1.0)
-parseBgColor :: String -> Maybe (Float, Float, Float)
-parseBgColor s
+parseColor :: String -> Maybe (Float, Float, Float)
+parseColor s
     | "#" `isPrefixOf` s =
         let hex = fromMaybe "" (stripPrefix "#" s)
         in if length hex == 6

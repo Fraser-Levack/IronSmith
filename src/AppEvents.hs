@@ -9,10 +9,10 @@ import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Control.Concurrent (forkIO, threadDelay)
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, makeAbsolute)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict)
+import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor)
 import AppCore
 
 -- | GLOBAL ROUTER
@@ -24,7 +24,7 @@ handleEvent _ (AppEvent (CompileTimerFired version)) = do
     -- Only compile if the user hasn't typed anything since this timer started
     when (version == _editVersion st) $ do
         let code = unlines $ E.getEditContents (_editor st)
-        newErr <- liftIO $ compileAndSave False code
+        newErr <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) False code
         let newStatus = case newErr of
                 Nothing -> Normal
                 Just (e, lineNum) -> ErrorMsg e lineNum
@@ -69,14 +69,15 @@ handleSplash _ (VtyEvent (V.EvKey (V.KChar c) []))
             let path = recents !! idx
             exists <- liftIO $ doesFileExist path
             when exists $ do
+                absPath <- liftIO $ makeAbsolute path
                 content <- liftIO $ readFile path
                 -- True: Hard save on open
-                _ <- liftIO $ compileAndSave True content
-                newRecents <- liftIO $ saveRecent path recents
+                _ <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True content
+                newRecents <- liftIO $ saveRecent absPath recents
                 put (st { _mode = Editing
-                        , _currentFile = Just path
+                        , _currentFile = Just absPath
                         , _editor = E.editor CodeEditor Nothing content
-                        , _recentFiles = newRecents 
+                        , _recentFiles = newRecents
                         , _isDirty = False
                         })
 handleSplash _ _ = return ()
@@ -126,8 +127,8 @@ handleEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            newErr <- liftIO $ compileAndSave True code 
-            newRecents <- liftIO $ saveRecent path (_recentFiles st) 
+            newErr <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True code
+            newRecents <- liftIO $ saveRecent path (_recentFiles st)
             let newStatus = case newErr of
                     Nothing -> Saved
                     Just (e, lineNum) -> ErrorMsg e lineNum
@@ -215,7 +216,7 @@ handleUnsavedPrompt _ (VtyEvent (V.EvKey V.KEnter [])) = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
             liftIO $ writeFile path code
-            _ <- liftIO $ compileAndSave True code
+            _ <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True code
             newRecents <- liftIO $ saveRecent path (_recentFiles st)
             put (st { _mode = Splash, _isDirty = False, _recentFiles = newRecents })
         Nothing ->
@@ -236,17 +237,18 @@ handleSaveDialog _ (VtyEvent (V.EvKey V.KEnter [])) = do
                    then "untitled.irsm" 
                    else head filenameLines
         code = unlines $ E.getEditContents (_editor st)
-    
-    liftIO $ writeFile filename code
-    newErr <- liftIO $ compileAndSave True code
-    newRecents <- liftIO $ saveRecent filename (_recentFiles st) 
-    
+
+    absPath <- liftIO $ makeAbsolute filename
+    liftIO $ writeFile absPath code
+    newErr <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True code
+    newRecents <- liftIO $ saveRecent absPath (_recentFiles st)
+
     let newStatus = case newErr of
             Nothing -> Saved
             Just (e, lineNum) -> ErrorMsg e lineNum
-    
+
     put (st { _mode = Editing
-            , _currentFile = Just filename
+            , _currentFile = Just absPath
             , _saveInput = E.editor SaveEditor (Just 1) ""
             , _status = newStatus
             , _recentFiles = newRecents
@@ -273,11 +275,12 @@ handleOpenDialog _ (VtyEvent (V.EvKey V.KEnter [])) = do
     exists <- liftIO $ doesFileExist path
     if exists
         then do
+            absPath <- liftIO $ makeAbsolute path
             content <- liftIO $ readFile path
-            _ <- liftIO $ compileAndSave True content
-            newRecents <- liftIO $ saveRecent path (_recentFiles st)
+            _ <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True content
+            newRecents <- liftIO $ saveRecent absPath (_recentFiles st)
             put (st { _mode = Editing
-                    , _currentFile = Just path
+                    , _currentFile = Just absPath
                     , _editor = E.editor CodeEditor Nothing content
                     , _status = Normal
                     , _recentFiles = newRecents

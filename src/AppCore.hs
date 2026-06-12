@@ -122,8 +122,8 @@ sendConfig cfg = do
 
 
 -- | COMPILER BRIDGE
-compileAndSave :: Bool -> String -> IO (Maybe (String, Int))
-compileAndSave isHardSave code =
+compileAndSave :: (Float, Float, Float) -> Bool -> String -> IO (Maybe (String, Int))
+compileAndSave defaultColor isHardSave code =
     case parse pScript "editor" code of
         Left bundle -> do
             let errStr = errorBundlePretty bundle
@@ -131,10 +131,10 @@ compileAndSave isHardSave code =
                 (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
                 lineNum = unPos (sourceLine (pstateSourcePos posState))
             return $ Just (errStr, lineNum)
-            
+
         Right astScript -> do
             -- Generate the Bytecode instead of GLSL!
-            let bytecode = compileToBytecode astScript
+            let bytecode = compileToBytecode defaultColor astScript
             
             -- Beam the raw bytes to the Rust SSBO
             sendBytecode bytecode

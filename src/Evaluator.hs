@@ -140,25 +140,31 @@ compileGroup env mat (s:ss) =
     compileGroup env mat ss ++ compileShape env mat s ++ [10.0, 0.0, 0.0, 0.0]
 
 -- | ENTRY POINT
-compileToBytecode :: Script -> [Float]
-compileToBytecode script = 
-    let draws = filter (not . null) (runScript Map.empty script)
+--   defaultColor sets the colour drawn shapes get when they aren't
+--   wrapped in their own paint(...) call.
+compileToBytecode :: (Float, Float, Float) -> Script -> [Float]
+compileToBytecode defaultColor script =
+    let draws = filter (not . null) (runScript defaultColor Map.empty script)
     in case draws of
         [] -> [0.0, 0.0, 0.0, 0.0] -- Halt vec4
-        
-        (firstDraw:restDraws) -> 
+
+        (firstDraw:restDraws) ->
             firstDraw ++ concatMap (\d -> d ++ [10.0, 0.0, 0.0, 0.0]) restDraws ++ [0.0, 0.0, 0.0, 0.0]
 
 -- | SCRIPT RUNNER
 -- NEW: Now returns a List of Bytecode Arrays (one for each Draw statement)
-runScript :: Env -> Script -> [[Float]]
-runScript _ [] = []
-runScript env (stmt:rest) = case stmt of
-    Assign name expr -> 
-        runScript (Map.insert name (VNum (evalExpr env expr)) env) rest
-        
-    AssignShape name shape -> 
-        runScript (Map.insert name (VShape shape) env) rest
-        
-    Draw shape -> 
-        compileShape env 0.0 shape : runScript env rest
+runScript :: (Float, Float, Float) -> Env -> Script -> [[Float]]
+runScript _ _ [] = []
+runScript defaultColor env (stmt:rest) = case stmt of
+    Assign name expr ->
+        runScript defaultColor (Map.insert name (VNum (evalExpr env expr)) env) rest
+
+    AssignShape name shape ->
+        runScript defaultColor (Map.insert name (VShape shape) env) rest
+
+    Draw shape ->
+        let (r, g, b) = defaultColor
+            -- Push the configured default colour before the shape, and pop
+            -- it after, so an explicit paint(...) inside still overrides it.
+            bytecode = [30.0, r, g, b] ++ compileShape env 0.0 shape ++ [31.0, 0.0, 0.0, 0.0]
+        in bytecode : runScript defaultColor env rest

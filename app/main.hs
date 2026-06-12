@@ -9,7 +9,7 @@ import System.Directory (doesFileExist)
 import Control.Concurrent (threadDelay)
 
 import AppState
-import Config (loadConfig, defaultConfig)
+import Config (loadConfig, defaultConfig, cfgDefaultObjectColor)
 import AppCore
 import AppUI
 import AppEvents
@@ -49,10 +49,10 @@ main = do
     if demoExists
         then do
             code <- readFile demoPath
-            _ <- compileAndSave True code
+            _ <- compileAndSave (cfgDefaultObjectColor cfg) True code
             return ()
         else do
-            _ <- compileAndSave True "torus(4, 1, 32)"
+            _ <- compileAndSave (cfgDefaultObjectColor cfg) True "torus(4, 1, 32)"
             return ()
     
     h <- launchViewer
