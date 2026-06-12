@@ -44,7 +44,8 @@ defaultConfigText = unlines
     , "[viewer]"
     , ""
     , "# Background colour of the 3D viewport."
-    , "# Use a hex colour (e.g. #0a0a1a) or three floats 0.0-1.0 (e.g. 0.02, 0.02, 0.05)"
+    , "# Use a hex colour (e.g. #0a0a1a) or three floats 0.0-1.0"
+    , "# (e.g. 0.02, 0.02, 0.05)"
     , "background_color = #05050d"
     , ""
     , "# Starting camera distance from the origin"
@@ -79,13 +80,22 @@ defaultConfigText = unlines
 
 -- ─── PARSER ──────────────────────────────────────────────────────────────────
 
+-- | Read a file's contents strictly, closing the handle before returning.
+--   Lazy 'readFile' can leave the handle open until GC'd, which on Windows
+--   causes a later 'writeFile' to the same path to fail with
+--   "resource busy (file is locked)".
+readFileStrict :: FilePath -> IO String
+readFileStrict path = do
+    contents <- readFile path
+    length contents `seq` return contents
+
 -- | Load config from disk, writing defaults if it doesn't exist yet.
 loadConfig :: FilePath -> IO IronConfig
 loadConfig path = do
     exists <- doesFileExist path
     if exists
         then do
-            raw <- readFile path
+            raw <- readFileStrict path
             return (parseConfig raw)
         else do
             writeFile path defaultConfigText

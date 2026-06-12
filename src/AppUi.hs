@@ -7,7 +7,7 @@ import Brick.Widgets.Border.Style
 import Brick.Widgets.Center (center, hCenter)
 import qualified Brick.Widgets.Edit as E
 import System.FilePath (takeFileName)
-import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit) -- Required for the Lexer
+import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit, isSpace) -- Required for the Lexer
 
 import AppState
 
@@ -148,7 +148,7 @@ drawConfigEditor st =
     withBorderStyle unicode $
     borderWithLabel (str " IronSmith Settings (ironsmith.toml) ") $
     vBox
-        [ padAll 1 $ E.renderEditor (vBox . map str) True (_configInput st)
+        [ padAll 1 $ E.renderEditor (vBox . map drawConfigLine) True (_configInput st)
         , hBorder
         , padAll 1 $ hBox
             [ withAttr (attrName "success") $ str "Ctrl+S: Save & Apply"
@@ -156,6 +156,50 @@ drawConfigEditor st =
             , withAttr (attrName "error")   $ str "ESC: Discard"
             ]
         ]
+
+-- | Render a single line of the settings file with syntax highlighting.
+--   Empty lines are rendered as a single space, otherwise Brick collapses
+--   them to zero height and the cursor row no longer lines up with the
+--   underlying editor contents (the same fix drawEditor applies).
+drawConfigLine :: String -> Widget Name
+drawConfigLine s
+    | null s    = str " "
+    | otherwise = hBox (tokenizeConfig s)
+
+-- | SETTINGS SYNTAX HIGHLIGHTING (TOML-ish)
+--   Highlights comments, [section] headers, keys, and values.
+tokenizeConfig :: String -> [Widget Name]
+tokenizeConfig line = case dropWhile isSpace line of
+    ('#':_) -> [withAttr (attrName "comment") (str line)]
+    ('[':_) -> [withAttr (attrName "section") (str line)]
+    _       -> case break (== '=') line of
+        (key, '=':val) -> withAttr (attrName "key") (str key)
+                        : str "="
+                        : tokenizeConfigValue val
+        _              -> [str line]
+
+-- | Highlight the value side of a "key = value" line, including any
+--   trailing "# ..." comment.
+tokenizeConfigValue :: String -> [Widget Name]
+tokenizeConfigValue [] = []
+tokenizeConfigValue s@(c:cs)
+    | isSpace c = let (ws, rest) = span isSpace s in str ws : tokenizeConfigValue rest
+    | c == '#'  =
+        let (hex, rest) = splitAt 6 cs
+        in if length hex == 6 && all isHexDigit hex
+           then withAttr (attrName "colorHex") (str ('#':hex)) : tokenizeConfigValue rest
+           else [withAttr (attrName "comment") (str s)]
+    | otherwise =
+        let (word, rest) = break (\x -> isSpace x || x == '#') s
+        in colorConfigValue word : tokenizeConfigValue rest
+
+colorConfigValue :: String -> Widget Name
+colorConfigValue w
+    | w == "true"  = withAttr (attrName "success") (str w)
+    | w == "false" = withAttr (attrName "error") (str w)
+    | not (null w) && all (\ch -> isDigit ch || ch == '.' || ch == '-') w
+                   = withAttr (attrName "number") (str w)
+    | otherwise    = str w
 
 -- | SYNTAX HIGHLIGHTING LEXER
 tokenize :: String -> [Widget Name]

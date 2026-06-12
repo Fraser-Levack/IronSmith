@@ -12,7 +12,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import System.Directory (doesFileExist)
 
 import AppState
-import Config (loadConfig, defaultConfigText)
+import Config (loadConfig, defaultConfigText, readFileStrict)
 import AppCore
 
 -- | GLOBAL ROUTER
@@ -55,7 +55,7 @@ handleSplash _ (VtyEvent (V.EvKey (V.KChar 'g') [])) = do
     configPath <- liftIO getConfigPath
     exists <- liftIO $ doesFileExist configPath
     content <- if exists
-                   then liftIO $ readFile configPath
+                   then liftIO $ readFileStrict configPath
                    else return defaultConfigText
     put (st { _mode = ConfigEditing
             , _configInput = E.editor ConfigEditor Nothing content
@@ -110,7 +110,7 @@ handleEditing _ (VtyEvent (V.EvKey (V.KChar 'g') [V.MCtrl])) = do
     configPath <- liftIO getConfigPath
     exists <- liftIO $ doesFileExist configPath
     content <- if exists
-                   then liftIO $ readFile configPath
+                   then liftIO $ readFileStrict configPath
                    else return defaultConfigText
     put (st { _mode = ConfigEditing
             , _configInput = E.editor ConfigEditor Nothing content

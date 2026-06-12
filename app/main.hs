@@ -31,6 +31,9 @@ app chan = App
         , (attrName "number",    fg V.yellow)
         , (attrName "errorBg",   bg V.red)
         , (attrName "colorHex", fg V.magenta `V.withStyle` V.bold)
+        , (attrName "comment",  fg V.brightBlack)
+        , (attrName "section",  fg (V.rgbColor 255 144 47) `V.withStyle` V.bold)
+        , (attrName "key",      fg V.cyan `V.withStyle` V.bold)
         ]
     }
 
