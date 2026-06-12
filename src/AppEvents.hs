@@ -16,7 +16,7 @@ import Data.List (sort)
 import Data.Maybe (listToMaybe)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, IronConfig)
+import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, IronConfig)
 import AppCore
 
 -- | GLOBAL ROUTER
@@ -33,6 +33,19 @@ handleEvent _ (AppEvent (CompileTimerFired version)) = do
                 Nothing -> Normal
                 Just (e, lineNum) -> ErrorMsg e lineNum
         put (st { _status = newStatus })
+
+-- Progress updates from a background export
+handleEvent _ (AppEvent (ExportProgress p)) = do
+    st <- get
+    put (st { _exportProgress = Just p })
+
+-- Background export finished (successfully or with an error)
+handleEvent _ (AppEvent (ExportFinished result)) = do
+    st <- get
+    let newStatus = case result of
+            Right objPath      -> Exported objPath
+            Left (e, lineNum)  -> ErrorMsg e lineNum
+    put (st { _exportProgress = Nothing, _status = newStatus })
 
 handleEvent _ (VtyEvent (V.EvKey (V.KChar 'q') [V.MCtrl])) = halt -- Global Killswitch
 handleEvent chan ev = do
@@ -230,18 +243,22 @@ runCommand _ CmdOpenFile = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
 
-runCommand _ CmdExportOBJ = do
+runCommand chan CmdExportOBJ = do
     st <- get
     case _currentFile st of
         Nothing -> put (st { _status = ErrorMsg "Save the file before exporting" 0 })
+        Just _ | _exportProgress st /= Nothing -> return () -- export already in progress
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
                 objPath = replaceExtension path "obj"
-            result <- liftIO $ exportModelToOBJ (cfgDefaultObjectColor (_config st)) code objPath
-            let newStatus = case result of
-                    Nothing -> Exported objPath
-                    Just (e, lineNum) -> ErrorMsg e lineNum
-            put (st { _status = newStatus })
+                resolution = cfgExportResolution (_config st)
+                color = cfgDefaultObjectColor (_config st)
+            put (st { _exportProgress = Just 0.0 })
+            _ <- liftIO $ forkIO $ do
+                result <- exportModelToOBJ color code objPath resolution
+                                          (\p -> writeBChan chan (ExportProgress p))
+                writeBChan chan (ExportFinished result)
+            return ()
 
 runCommand _ CmdSave = do
     st <- get

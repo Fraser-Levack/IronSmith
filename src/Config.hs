@@ -21,6 +21,7 @@ data IronConfig = IronConfig
     , cfgDefaultObjectColor :: (Float, Float, Float) -- default colour for unpainted shapes
     , cfgEditorLineWrap     :: Bool
     , cfgKeybindings        :: [(String, String)] -- command id -> key combo, e.g. "save" -> "ctrl+s"
+    , cfgExportResolution   :: Int -- grid cells per axis for .obj export
     } deriving (Show)
 
 -- | Rebindable commands and their default key combos.
@@ -53,6 +54,7 @@ defaultConfig = IronConfig
     , cfgDefaultObjectColor = (0.8, 0.4, 0.1) -- Forge Orange
     , cfgEditorLineWrap     = False
     , cfgKeybindings        = defaultKeybindings
+    , cfgExportResolution   = 128
     }
 
 -- | The default config file content (written on first run)
@@ -106,6 +108,14 @@ defaultConfigText = unlines $
     , ""
     , "# Automatically re-open the last edited file on startup (true/false)"
     , "restore_last_file = false"
+    , ""
+    , "[export]"
+    , ""
+    , "# Grid cells per axis when exporting to .obj. Higher values produce"
+    , "# much more detailed meshes but take significantly longer to export"
+    , "# and produce larger files."
+    , "# Recommended range: 64 (fast preview) - 256 (high detail, slow)"
+    , "export_resolution = 128"
     , ""
     , "[keybindings]"
     , ""
@@ -170,6 +180,8 @@ parseConfig raw =
                                     (lookup "editor_line_wrap" pairs >>= readMaybeBool)
         , cfgKeybindings        = [ (cmdId, fromMaybe defaultCombo (lookup cmdId pairs))
                                    | (cmdId, defaultCombo) <- defaultKeybindings ]
+        , cfgExportResolution   = fromMaybe (cfgExportResolution defaultConfig)
+                                    (lookup "export_resolution" pairs >>= readMaybeInt)
         }
 
 -- | Parse a single line into a (key, value) pair.

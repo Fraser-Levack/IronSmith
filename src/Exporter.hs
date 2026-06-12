@@ -12,7 +12,12 @@
 module Exporter (exportToOBJ) where
 
 import Data.Array.Unboxed (UArray, listArray, (!), bounds, rangeSize)
+import Data.Array.IO (IOUArray)
+import Data.Array.MArray (newArray, writeArray, freeze)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (foldl')
+import Control.Monad (forM_)
+import System.IO (withFile, IOMode(WriteMode), Handle, hPutStrLn)
 
 type Vec3 = (Float, Float, Float)
 
@@ -154,34 +159,55 @@ evalSDF instrs p0 = go 0 p0 1.0 [] []
 -- | A sampled grid corner: its world position and the SDF value there.
 data SVtx = SVtx { svPos :: !Vec3, svVal :: !Float }
 
--- | Sample the SDF over a cube grid spanning [-radius, radius]^3 with
---   `res` cells per axis, and triangulate the zero-isosurface.
---   Returns a flat triangle soup (no vertex welding - simplest correct
---   approach for an export tool).
-marchingCubes :: (Vec3 -> Float) -> Float -> Int -> [(Vec3,Vec3,Vec3)]
-marchingCubes sdf radius res =
-    [ tri
-    | i <- [0 .. res-1], j <- [0 .. res-1], k <- [0 .. res-1]
-    , let corners = [ SVtx (coord (i+dx), coord (j+dy), coord (k+dz)) (gridVal (i+dx) (j+dy) (k+dz))
-                    | (dx,dy,dz) <- cornerOffsets ]
-    , tet <- cubeTets corners
-    , tri <- tetTriangles tet
-    ]
+-- Corner order matches the cube diagram used for the tet decomposition below:
+--   0:(0,0,0) 1:(1,0,0) 2:(1,0,1) 3:(0,0,1) 4:(0,1,0) 5:(1,1,0) 6:(1,1,1) 7:(0,1,1)
+cornerOffsets :: [(Int,Int,Int)]
+cornerOffsets = [(0,0,0),(1,0,0),(1,0,1),(0,0,1),(0,1,0),(1,1,0),(1,1,1),(0,1,1)]
+
+-- | Sample the SDF at every point of a (res+1)^3 grid spanning
+--   [-radius, radius]^3. Reports progress in [0, 0.5] as it goes (sampling
+--   is roughly as expensive as the meshing pass that follows).
+sampleGrid :: (Vec3 -> Float) -> Float -> Int -> (Float -> IO ()) -> IO (UArray Int Float)
+sampleGrid sdf radius res report = do
+    let n = res + 1
+    arr <- newArray (0, n*n*n - 1) 0 :: IO (IOUArray Int Float)
+    forM_ [0 .. res] $ \i -> do
+        forM_ [0 .. res] $ \j ->
+            forM_ [0 .. res] $ \k ->
+                writeArray arr ((i*n + j)*n + k) (sdf (coord radius res i, coord radius res j, coord radius res k))
+        report (0.5 * fromIntegral (i+1) / fromIntegral n)
+    freeze arr
+
+-- | World-space coordinate of grid index `idx` (0..res) along one axis.
+coord :: Float -> Int -> Int -> Float
+coord radius res idx = -radius + fromIntegral idx * ((2*radius) / fromIntegral res)
+
+-- | Walk every cube cell of the sampled grid, triangulate it via Marching
+--   Tetrahedra, and stream the resulting triangle soup straight to `h` as
+--   Wavefront OBJ (no vertex deduplication, no buffering of the whole mesh).
+--   Reports progress in [0.5, 1.0] as it goes.
+writeMeshOBJ :: Handle -> UArray Int Float -> Float -> Int -> (Float -> IO ()) -> IO ()
+writeMeshOBJ h grid radius res report = do
+    vertCount <- newIORef (0 :: Int)
+    forM_ [0 .. res-1] $ \i -> do
+        forM_ [0 .. res-1] $ \j ->
+            forM_ [0 .. res-1] $ \k -> do
+                let corners = [ SVtx (coord radius res (i+dx), coord radius res (j+dy), coord radius res (k+dz))
+                                      (gridVal (i+dx) (j+dy) (k+dz))
+                              | (dx,dy,dz) <- cornerOffsets ]
+                forM_ (cubeTets corners) $ \tet ->
+                    forM_ (tetTriangles tet) $ \(a,b,c) -> do
+                        cnt <- readIORef vertCount
+                        hPutStrLn h (vline a)
+                        hPutStrLn h (vline b)
+                        hPutStrLn h (vline c)
+                        hPutStrLn h ("f " ++ show (cnt+1) ++ " " ++ show (cnt+2) ++ " " ++ show (cnt+3))
+                        writeIORef vertCount (cnt + 3)
+        report (0.5 + 0.5 * fromIntegral (i+1) / fromIntegral res)
   where
     n = res + 1
-    step = (2*radius) / fromIntegral res
-    coord idx = -radius + fromIntegral idx * step
-
-    grid :: UArray Int Float
-    grid = listArray (0, n*n*n - 1)
-        [ sdf (coord i, coord j, coord k) | i <- [0..res], j <- [0..res], k <- [0..res] ]
-
     gridVal i j k = grid ! ((i*n + j)*n + k)
-
-    -- Corner order matches the cube diagram used for the tet decomposition below:
-    --   0:(0,0,0) 1:(1,0,0) 2:(1,0,1) 3:(0,0,1) 4:(0,1,0) 5:(1,1,0) 6:(1,1,1) 7:(0,1,1)
-    cornerOffsets :: [(Int,Int,Int)]
-    cornerOffsets = [(0,0,0),(1,0,0),(1,0,1),(0,0,1),(0,1,0),(1,1,0),(1,1,1),(0,1,1)]
+    vline (x,y,z) = "v " ++ show x ++ " " ++ show y ++ " " ++ show z
 
 -- | Split a cube (given its 8 corners in the order above) into 6
 --   tetrahedra, all sharing the body diagonal between corners 0 and 6.
@@ -233,28 +259,18 @@ orient (p0,p1,p2) outward =
 
 -- ─── OBJ OUTPUT ────────────────────────────────────────────────────────────────
 
--- | Format a triangle soup as Wavefront OBJ text (no vertex deduplication).
-meshToOBJString :: [(Vec3,Vec3,Vec3)] -> String
-meshToOBJString tris = unlines (vLines ++ fLines)
-  where
-    verts = concatMap (\(a,b,c) -> [a,b,c]) tris
-    vLines = [ "v " ++ show x ++ " " ++ show y ++ " " ++ show z | (x,y,z) <- verts ]
-    fLines = [ "f " ++ show (i*3+1) ++ " " ++ show (i*3+2) ++ " " ++ show (i*3+3)
-             | i <- [0 .. length tris - 1] ]
-
 -- | The radius of the cube (centred on the origin) that is sampled for
 --   export. Matches the raymarcher's `scene_radius` in core.glsl.
 exportRadius :: Float
 exportRadius = 25.0
 
--- | Grid cells per axis. Higher = more detail, slower export.
-exportResolution :: Int
-exportResolution = 64
-
--- | Compile the scene's bytecode into a mesh and write it to `path` as a
---   Wavefront .obj file.
-exportToOBJ :: [Float] -> FilePath -> IO ()
-exportToOBJ bytecode path = writeFile path (meshToOBJString tris)
+-- | Compile the scene's bytecode into a mesh and stream it to `path` as a
+--   Wavefront .obj file, sampling `res` grid cells per axis. Calls `report`
+--   with progress in [0,1] as the export proceeds (sampling is the first
+--   half, meshing/writing is the second half).
+exportToOBJ :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO ()
+exportToOBJ bytecode path res report = do
+    grid <- sampleGrid (evalSDF arr) exportRadius res report
+    withFile path WriteMode $ \h -> writeMeshOBJ h grid exportRadius res report
   where
     arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
-    tris = marchingCubes (evalSDF arr) exportRadius exportResolution

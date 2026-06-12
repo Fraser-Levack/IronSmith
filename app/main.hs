@@ -80,6 +80,7 @@ main = do
             , _viewerHandle = Just h 
             , _editVersion  = 0
             , _config       = cfg                               -- NEW
+            , _exportProgress = Nothing
             }
             
     -- NEW: Boot up customMain instead of defaultMain

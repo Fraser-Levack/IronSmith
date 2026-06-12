@@ -93,11 +93,13 @@ drawEditor st = ui
         Nothing -> " *UNSAVED*" ++ dirtyMarker ++ " "
         Just f  -> " " ++ takeFileName f ++ dirtyMarker ++ " "
 
-    statusWidget = case _status st of
-        Normal            -> withAttr (attrName "success") $ str "Status: OK"
-        Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
-        Exported path     -> withAttr (attrName "saved")   $ str ("Status: EXPORTED TO " ++ takeFileName path)
-        ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
+    statusWidget = case _exportProgress st of
+        Just p  -> withAttr (attrName "title") $ str ("Exporting to .OBJ... " ++ progressBarText p)
+        Nothing -> case _status st of
+            Normal            -> withAttr (attrName "success") $ str "Status: OK"
+            Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
+            Exported path     -> withAttr (attrName "saved")   $ str ("Status: EXPORTED TO " ++ takeFileName path)
+            ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
 
     modeIndicator = case _viewerMode st of
         OrbitMode  -> withAttr (attrName "title") $ str " -- ORBIT EDIT -- "
@@ -111,6 +113,17 @@ drawEditor st = ui
              , hBorder
              , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget]
              ]
+
+-- | Render a hand-rolled text progress bar, e.g. "[#####-----] 42%", for a
+--   progress value in [0,1].
+progressBarText :: Float -> String
+progressBarText p =
+    let clamped = max 0 (min 1 p)
+        width   = 20
+        filled  = round (clamped * fromIntegral width)
+        bar     = replicate filled '#' ++ replicate (width - filled) '-'
+        pct     = round (clamped * 100) :: Int
+    in "[" ++ bar ++ "] " ++ show pct ++ "%"
 
 drawUnsavedPrompt :: AppState -> Widget Name
 drawUnsavedPrompt st = center $ borderWithLabel (str " Unsaved Changes ") $ padAll 2 $ vBox

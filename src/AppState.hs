@@ -9,6 +9,8 @@ import Data.Maybe (fromMaybe)
 import Config (IronConfig, defaultConfig, cfgKeybindings, defaultKeybindings)
 
 data CustomEvent = CompileTimerFired Int
+                 | ExportProgress Float
+                 | ExportFinished (Either (String, Int) FilePath)
     deriving (Show)
 
 data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt | ConfigEditing | CommandPalette
@@ -38,6 +40,7 @@ data AppState = AppState
     , _viewerHandle :: Maybe ProcessHandle
     , _editVersion  :: Int
     , _config       :: IronConfig
+    , _exportProgress :: Maybe Float
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)

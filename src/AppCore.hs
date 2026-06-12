@@ -148,17 +148,17 @@ compileAndSave defaultColor isHardSave code =
 -- | EXPORT BRIDGE
 --   Parses and compiles the script just like 'compileAndSave', then meshes
 --   the resulting SDF scene and writes it out as a Wavefront .obj file.
-exportModelToOBJ :: (Float, Float, Float) -> String -> FilePath -> IO (Maybe (String, Int))
-exportModelToOBJ defaultColor code objPath =
+exportModelToOBJ :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
+exportModelToOBJ defaultColor code objPath resolution report =
     case parse pScript "editor" code of
         Left bundle -> do
             let errStr = errorBundlePretty bundle
                 firstErr = NE.head (bundleErrors bundle)
                 (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
                 lineNum = unPos (sourceLine (pstateSourcePos posState))
-            return $ Just (errStr, lineNum)
+            return $ Left (errStr, lineNum)
 
         Right astScript -> do
             let bytecode = compileToBytecode defaultColor astScript
-            exportToOBJ bytecode objPath
-            return Nothing
+            exportToOBJ bytecode objPath resolution report
+            return $ Right objPath
