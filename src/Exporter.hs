@@ -185,9 +185,11 @@ coord radius res idx = -radius + fromIntegral idx * ((2*radius) / fromIntegral r
 -- | Walk every cube cell of the sampled grid, triangulate it via Marching
 --   Tetrahedra, and stream the resulting triangle soup straight to `h` as
 --   Wavefront OBJ (no vertex deduplication, no buffering of the whole mesh).
+--   Each vertex position is multiplied by `unscale` before being written,
+--   to undo the export-time scaling applied to the sampled SDF.
 --   Reports progress in [0.5, 1.0] as it goes.
-writeMeshOBJ :: Handle -> UArray Int Float -> Float -> Int -> (Float -> IO ()) -> IO ()
-writeMeshOBJ h grid radius res report = do
+writeMeshOBJ :: Handle -> UArray Int Float -> Float -> Int -> Float -> (Float -> IO ()) -> IO ()
+writeMeshOBJ h grid radius res unscale report = do
     vertCount <- newIORef (0 :: Int)
     forM_ [0 .. res-1] $ \i -> do
         forM_ [0 .. res-1] $ \j ->
@@ -207,7 +209,7 @@ writeMeshOBJ h grid radius res report = do
   where
     n = res + 1
     gridVal i j k = grid ! ((i*n + j)*n + k)
-    vline (x,y,z) = "v " ++ show x ++ " " ++ show y ++ " " ++ show z
+    vline (x,y,z) = "v " ++ show (x*unscale) ++ " " ++ show (y*unscale) ++ " " ++ show (z*unscale)
 
 -- | Split a cube (given its 8 corners in the order above) into 6
 --   tetrahedra, all sharing the body diagonal between corners 0 and 6.
@@ -264,13 +266,53 @@ orient (p0,p1,p2) outward =
 exportRadius :: Float
 exportRadius = 25.0
 
+-- | The half-extent (in world units) that the model's bounding box is
+--   scaled to fill before sampling. Small models get scaled up and large
+--   ones scaled down to land around this size, so the fixed sampling grid
+--   always captures the model at a useful relative resolution without
+--   clipping it.
+targetBoundingRadius :: Float
+targetBoundingRadius = 15.0
+
+-- | Grid resolution used for the quick bounding-box scan below. Coarse is
+--   fine here - it just needs to find roughly where the model sits.
+boundingScanResolution :: Int
+boundingScanResolution = 32
+
+-- | Scan a coarse grid over [-exportRadius,exportRadius]^3 and return the
+--   half-extent (max absolute coordinate on any axis) of all sample points
+--   that lie at or inside the surface. Falls back to 'exportRadius' for an
+--   empty/degenerate scene, which makes the resulting scale factor 1.
+estimateBoundingRadius :: (Vec3 -> Float) -> Float
+estimateBoundingRadius sdf =
+    let res = boundingScanResolution
+        cell = (2*exportRadius) / fromIntegral res
+        extents = [ m
+                   | i <- [0..res], let x = coord exportRadius res i
+                   , j <- [0..res], let y = coord exportRadius res j
+                   , k <- [0..res], let z = coord exportRadius res k
+                   , sdf (x,y,z) <= cell
+                   , m <- [abs x, abs y, abs z]
+                   ]
+    in if null extents then exportRadius else maximum extents
+
 -- | Compile the scene's bytecode into a mesh and stream it to `path` as a
 --   Wavefront .obj file, sampling `res` grid cells per axis. Calls `report`
 --   with progress in [0,1] as the export proceeds (sampling is the first
 --   half, meshing/writing is the second half).
+--
+--   Before sampling, the scene is automatically scaled so its bounding box
+--   is about 'targetBoundingRadius' units across - this gives small models
+--   far more detail per grid cell, and shrinks oversized ones so they don't
+--   get clipped by the fixed sampling box. Output vertices are scaled back
+--   down so the exported mesh matches the model's true size.
 exportToOBJ :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO ()
 exportToOBJ bytecode path res report = do
-    grid <- sampleGrid (evalSDF arr) exportRadius res report
-    withFile path WriteMode $ \h -> writeMeshOBJ h grid exportRadius res report
+    let baseSdf = evalSDF arr
+        modelRadius = max 0.001 (estimateBoundingRadius baseSdf)
+        scaleFactor = targetBoundingRadius / modelRadius
+        scaledSdf (x,y,z) = baseSdf (x/scaleFactor, y/scaleFactor, z/scaleFactor) * scaleFactor
+    grid <- sampleGrid scaledSdf exportRadius res report
+    withFile path WriteMode $ \h -> writeMeshOBJ h grid exportRadius res (1/scaleFactor) report
   where
     arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
