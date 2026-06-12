@@ -17,7 +17,7 @@ data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt | Conf
 data Name = CodeEditor | SaveEditor | OpenEditor | ConfigEditor | PaletteEditor
     deriving (Eq, Ord, Show)
 
-data AppStatus = Normal | Saved | ErrorMsg String Int 
+data AppStatus = Normal | Saved | Exported FilePath | ErrorMsg String Int
 
 data ViewerMode = OrbitMode | StaticMode | FlyMode
     deriving (Eq, Show)
@@ -59,7 +59,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -70,6 +70,7 @@ commandConfigKey CmdOpenFile       = "open_file"
 commandConfigKey CmdSettings       = "settings"
 commandConfigKey CmdCycleViewMode  = "cycle_view_mode"
 commandConfigKey CmdResetCamera    = "reset_camera"
+commandConfigKey CmdExportOBJ      = "export_obj"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -79,6 +80,7 @@ commandLabel CmdOpenFile        = "Open File..."
 commandLabel CmdSettings        = "Open Settings"
 commandLabel CmdCycleViewMode   = "Cycle Viewer Mode"
 commandLabel CmdResetCamera     = "Reset Camera"
+commandLabel CmdExportOBJ        = "Export to .OBJ"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String

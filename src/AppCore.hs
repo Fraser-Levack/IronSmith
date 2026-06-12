@@ -14,6 +14,7 @@ import Text.Megaparsec.Pos (sourceLine, unPos)
 import AST
 import Parser
 import Evaluator
+import Exporter (exportToOBJ)
 import Config
 
 import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, StdStream(CreatePipe), terminateProcess)
@@ -135,11 +136,29 @@ compileAndSave defaultColor isHardSave code =
         Right astScript -> do
             -- Generate the Bytecode instead of GLSL!
             let bytecode = compileToBytecode defaultColor astScript
-            
+
             -- Beam the raw bytes to the Rust SSBO
             sendBytecode bytecode
-            
-            -- (Skipping the hard-save logic for the output.glsl file for now, 
+
+            -- (Skipping the hard-save logic for the output.glsl file for now,
             -- since we aren't generating strings anymore)
-            
+
+            return Nothing
+
+-- | EXPORT BRIDGE
+--   Parses and compiles the script just like 'compileAndSave', then meshes
+--   the resulting SDF scene and writes it out as a Wavefront .obj file.
+exportModelToOBJ :: (Float, Float, Float) -> String -> FilePath -> IO (Maybe (String, Int))
+exportModelToOBJ defaultColor code objPath =
+    case parse pScript "editor" code of
+        Left bundle -> do
+            let errStr = errorBundlePretty bundle
+                firstErr = NE.head (bundleErrors bundle)
+                (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
+                lineNum = unPos (sourceLine (pstateSourcePos posState))
+            return $ Just (errStr, lineNum)
+
+        Right astScript -> do
+            let bytecode = compileToBytecode defaultColor astScript
+            exportToOBJ bytecode objPath
             return Nothing

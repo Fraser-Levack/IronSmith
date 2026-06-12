@@ -35,6 +35,7 @@ defaultKeybindings =
     , ("settings",        "ctrl+g")
     , ("cycle_view_mode",  "ctrl+e")
     , ("reset_camera",     "ctrl+r")
+    , ("export_obj",       "ctrl+shift+e")
     ]
 
 -- | Sensible defaults matching the current hardcoded values

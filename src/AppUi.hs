@@ -96,6 +96,7 @@ drawEditor st = ui
     statusWidget = case _status st of
         Normal            -> withAttr (attrName "success") $ str "Status: OK"
         Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
+        Exported path     -> withAttr (attrName "saved")   $ str ("Status: EXPORTED TO " ++ takeFileName path)
         ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
 
     modeIndicator = case _viewerMode st of

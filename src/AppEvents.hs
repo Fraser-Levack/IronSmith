@@ -10,6 +10,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Control.Concurrent (forkIO, threadDelay)
 import System.Directory (doesFileExist, makeAbsolute)
+import System.FilePath (replaceExtension)
 import Data.Char (isDigit, toLower)
 import Data.List (sort)
 import Data.Maybe (listToMaybe)
@@ -228,6 +229,19 @@ runCommand _ CmdSettings = do
 runCommand _ CmdOpenFile = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
+
+runCommand _ CmdExportOBJ = do
+    st <- get
+    case _currentFile st of
+        Nothing -> put (st { _status = ErrorMsg "Save the file before exporting" 0 })
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+                objPath = replaceExtension path "obj"
+            result <- liftIO $ exportModelToOBJ (cfgDefaultObjectColor (_config st)) code objPath
+            let newStatus = case result of
+                    Nothing -> Exported objPath
+                    Just (e, lineNum) -> ErrorMsg e lineNum
+            put (st { _status = newStatus })
 
 runCommand _ CmdSave = do
     st <- get
