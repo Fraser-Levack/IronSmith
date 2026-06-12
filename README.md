@@ -1,6 +1,7 @@
 # 🏰 IronSmith
 
 ![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange)
+![Release: v0.1.0](https://img.shields.io/badge/Release-v0.1.0-blue)
 ![Haskell](https://img.shields.io/badge/Compiler-Haskell-5e5086?logo=haskell)
 ![Rust](https://img.shields.io/badge/Renderer-Rust-ce412b?logo=rust)
 
@@ -29,6 +30,12 @@ To run IronSmith from source, you will need:
 * A GPU capable of Vulkan, Metal, or DX12.
 
 ## 🛠️ Quick Start
+
+### Option A: Download the latest release (Windows)
+
+Grab the prebuilt `IronSmith-v0.1.0-windows.zip` from the [Releases page](https://github.com/Fraser-Levack/IronSmith/releases), extract it, and run `ironsmith.exe` (or run `install.ps1` to add IronSmith to your PATH).
+
+### Option B: Build from source
 
 **1. Clone the repository:**
 ```bash
@@ -100,7 +107,7 @@ difference(
 
 [x] Material and color parsing
 
-[ ] Exporting generated SDFs to .obj or .stl meshes
+[x] Exporting generated SDFs to .obj meshes
 
 
 ## 🤝 Contributing
