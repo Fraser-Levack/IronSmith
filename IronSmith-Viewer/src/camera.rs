@@ -98,15 +98,17 @@ impl Camera {
                     if parts.len() == 3 {
                         self.bg_color = [parts[0], parts[1], parts[2]];
                     }
-                } else if let Some(rest) = cmd.strip_prefix("CMD:SET_CAMERA_DIST:") {
-                    if let Ok(d) = rest.trim().parse::<f32>() {
-                        self.target_dist = d;
-                        self.dist = d;
-                    }
-                } else if let Some(rest) = cmd.strip_prefix("CMD:SET_MARCH_STEPS:") {
-                    if let Ok(n) = rest.trim().parse::<i32>() {
-                        self.march_steps = n;
-                    }
+                } else if let Some(d) = cmd
+                    .strip_prefix("CMD:SET_CAMERA_DIST:")
+                    .and_then(|s| s.trim().parse::<f32>().ok())
+                {
+                    self.target_dist = d;
+                    self.dist = d;
+                } else if let Some(n) = cmd
+                    .strip_prefix("CMD:SET_MARCH_STEPS:")
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                {
+                    self.march_steps = n;
                 }
             }
         }

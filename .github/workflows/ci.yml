@@ -17,6 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install ncurses dev headers (for vty/brick)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libncurses-dev
+
       - uses: haskell-actions/setup@v2
         id: setup-haskell
         with:
