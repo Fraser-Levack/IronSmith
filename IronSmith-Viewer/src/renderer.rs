@@ -43,7 +43,7 @@ pub struct Renderer<'a> {
     pipeline_tx: mpsc::Sender<wgpu::RenderPipeline>,
 }
 
-impl<'a> Renderer<'a> {
+impl Renderer<'_> {
     pub async fn new(window: Arc<Window>, log_path: PathBuf) -> Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());

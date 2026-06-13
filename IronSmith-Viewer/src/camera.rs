@@ -90,21 +90,21 @@ impl Camera {
             "CMD:SHADOW_OFF" => self.shadow_enabled = false,
 
             _ => {
-                if cmd.starts_with("CMD:SET_BG:") {
-                    let parts: Vec<f32> = cmd["CMD:SET_BG:".len()..]
+                if let Some(rest) = cmd.strip_prefix("CMD:SET_BG:") {
+                    let parts: Vec<f32> = rest
                         .split(',')
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
                     if parts.len() == 3 {
                         self.bg_color = [parts[0], parts[1], parts[2]];
                     }
-                } else if cmd.starts_with("CMD:SET_CAMERA_DIST:") {
-                    if let Ok(d) = cmd["CMD:SET_CAMERA_DIST:".len()..].trim().parse::<f32>() {
+                } else if let Some(rest) = cmd.strip_prefix("CMD:SET_CAMERA_DIST:") {
+                    if let Ok(d) = rest.trim().parse::<f32>() {
                         self.target_dist = d;
                         self.dist = d;
                     }
-                } else if cmd.starts_with("CMD:SET_MARCH_STEPS:") {
-                    if let Ok(n) = cmd["CMD:SET_MARCH_STEPS:".len()..].trim().parse::<i32>() {
+                } else if let Some(rest) = cmd.strip_prefix("CMD:SET_MARCH_STEPS:") {
+                    if let Ok(n) = rest.trim().parse::<i32>() {
                         self.march_steps = n;
                     }
                 }

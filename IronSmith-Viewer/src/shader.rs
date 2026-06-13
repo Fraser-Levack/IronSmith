@@ -151,7 +151,7 @@ pub fn generate_shader_body(bytecode: &[f32]) -> String {
     while pc < bytecode.len() {
         let iop = bytecode[pc] as i32;
 
-        if iop >= 20 && iop <= 26 && iop != 25 {
+        if (20..=26).contains(&iop) && iop != 25 {
             body.push_str(&format!(
                 "p{} = current_p; sc{} = current_scale;\n",
                 tsp, tsp

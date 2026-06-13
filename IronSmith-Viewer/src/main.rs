@@ -65,10 +65,11 @@ async fn run() -> Result<()> {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(ps) => renderer.resize(ps),
 
-                WindowEvent::MouseWheel { delta, .. } => {
-                    if let MouseScrollDelta::LineDelta(_, y) = delta {
-                        camera.scroll_zoom(y);
-                    }
+                WindowEvent::MouseWheel {
+                    delta: MouseScrollDelta::LineDelta(_, y),
+                    ..
+                } => {
+                    camera.scroll_zoom(y);
                 }
 
                 WindowEvent::RedrawRequested => {
