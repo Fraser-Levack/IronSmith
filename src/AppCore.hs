@@ -2,7 +2,9 @@
 module AppCore where
 
 import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectoryIfMissing)
-import System.FilePath ((</>))
+import System.Environment (getExecutablePath)
+import System.FilePath ((</>), takeDirectory)
+import System.Info (os)
 import Data.List (nub)
 import qualified Data.List.NonEmpty as NE
 import Control.Exception (catch, SomeException)
@@ -29,11 +31,25 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C8
 
 
+-- | The viewer binary's name on this platform. Windows builds get a
+--   ".exe" suffix; Linux/macOS builds don't.
+viewerExeName :: String
+viewerExeName
+    | os == "mingw32" = "ironsmith-viewer.exe"
+    | otherwise       = "ironsmith-viewer"
+
+-- | Launch the Rust viewer. Looks for it alongside this executable first
+--   (where the release package puts it), falling back to the system PATH
+--   for development builds.
 launchViewer :: IO ProcessHandle
 launchViewer = do
-    let processConfig = (proc "IronSmith-Viewer.exe" []) 
+    exeDir <- takeDirectory <$> getExecutablePath
+    let bundledPath = exeDir </> viewerExeName
+    bundled <- doesFileExist bundledPath
+    let viewerPath = if bundled then bundledPath else viewerExeName
+        processConfig = (proc viewerPath [])
             { std_out = CreatePipe
-            , std_err = CreatePipe 
+            , std_err = CreatePipe
             }
     (_, _, _, handle) <- createProcess processConfig
     return handle

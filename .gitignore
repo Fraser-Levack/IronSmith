@@ -23,3 +23,6 @@ cabal.project.local~
 .ghc.environment.*
 /target
 /dist
+.ironsmith_recents
+/output.glsl
+/output.obj

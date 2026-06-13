@@ -9,7 +9,15 @@
 -- Tetrahedra (each grid cube split into 6 tetrahedra, each tetrahedron
 -- has only 16 sign configurations) to produce a watertight surface
 -- that correctly reflects CSG union/difference/intersection.
-module Exporter (exportToOBJ) where
+module Exporter
+    ( exportToOBJ
+    , sdSphere
+    , sdBox
+    , sdCylinder
+    , sdTorus
+    , sdCappedCone
+    , evalSDF
+    ) where
 
 import Data.Array.Unboxed (UArray, listArray, (!), bounds, rangeSize)
 import Data.Array.IO (IOUArray)

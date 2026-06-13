@@ -4,19 +4,19 @@ use std::time::Duration;
 
 pub enum NetMessage {
     Command(String),
-    Bytecode(Vec<f32>), 
+    Bytecode(Vec<f32>),
 }
 
 pub fn drain_sockets(listener: &TcpListener) -> Vec<NetMessage> {
     let mut messages = Vec::new();
-    
+
     while let Ok((mut stream, _)) = listener.accept() {
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(Duration::from_millis(1)));
-        
+
         let mut buffer = Vec::new();
         let _ = stream.read_to_end(&mut buffer);
-        
+
         if !buffer.is_empty() {
             if buffer.starts_with(b"CMD:") {
                 if let Ok(cmd_str) = String::from_utf8(buffer) {

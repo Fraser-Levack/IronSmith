@@ -1,5 +1,5 @@
-use std::sync::mpsc;
-use std::sync::Arc; // Needed for Arc<wgpu::Device>
+use std::sync::Arc;
+use std::sync::mpsc; // Needed for Arc<wgpu::Device>
 
 const SHADER_TEMPLATE: &str = r#"
 #version 450
@@ -137,126 +137,192 @@ void main() {
 }
 "#;
 
+/// Translates the bytecode emitted by the Haskell compiler into the body of
+/// the GLSL `map()` function, walking the same opcode stack machine that the
+/// CPU-side OBJ exporter and the GPU raymarcher both implement.
+pub fn generate_shader_body(bytecode: &[f32]) -> String {
+    let mut body = String::new();
+    let mut pc = 0;
+
+    let mut sp = 0;
+    let mut tsp = 0;
+    let mut csp = 0;
+
+    while pc < bytecode.len() {
+        let iop = bytecode[pc] as i32;
+
+        if iop >= 20 && iop <= 26 && iop != 25 {
+            body.push_str(&format!(
+                "p{} = current_p; sc{} = current_scale;\n",
+                tsp, tsp
+            ));
+            tsp += 1;
+        }
+
+        match iop {
+            0 => break, // OP_HALT
+            1 => {
+                // SPHERE
+                body.push_str(&format!(
+                    "s{} = Hit(sdSphere(current_p, {:.5}) * current_scale, current_col, {});\n",
+                    sp,
+                    bytecode[pc + 1],
+                    bytecode[pc + 2] as i32
+                ));
+                sp += 1;
+                pc += 4;
+            }
+            2 => {
+                // BOX
+                body.push_str(&format!("s{} = Hit(sdBox(current_p, vec3({:.5}, {:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3], bytecode[pc+4] as i32));
+                sp += 1;
+                pc += 8;
+            }
+            3 => {
+                // CYLINDER
+                body.push_str(&format!("s{} = Hit(sdCylinder(current_p, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+2], bytecode[pc+1], bytecode[pc+3] as i32));
+                sp += 1;
+                pc += 4;
+            }
+            4 => {
+                // CONE
+                body.push_str(&format!("s{} = Hit(sdCappedCone(current_p, {:.5}, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+3], bytecode[pc+1], bytecode[pc+2], bytecode[pc+4] as i32));
+                sp += 1;
+                pc += 8;
+            }
+            5 => {
+                // TORUS
+                body.push_str(&format!("s{} = Hit(sdTorus(current_p, vec2({:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3] as i32));
+                sp += 1;
+                pc += 4;
+            }
+            10 => {
+                // UNION
+                sp -= 1;
+                let b = sp;
+                sp -= 1;
+                let a = sp;
+                body.push_str(&format!("s{} = opU(s{}, s{});\n", a, a, b));
+                sp += 1;
+                pc += 4;
+            }
+            11 => {
+                // DIFF
+                sp -= 1;
+                let b = sp;
+                sp -= 1;
+                let a = sp;
+                body.push_str(&format!("s{} = opS(s{}, s{});\n", a, a, b));
+                sp += 1;
+                pc += 4;
+            }
+            12 => {
+                // INTERSECT
+                sp -= 1;
+                let b = sp;
+                sp -= 1;
+                let a = sp;
+                body.push_str(&format!("s{} = opI(s{}, s{});\n", a, a, b));
+                sp += 1;
+                pc += 4;
+            }
+            20 => {
+                // ROTATE_X
+                body.push_str(&format!("current_p = mat3(1.0, 0.0, 0.0, 0.0, {:.5}, {:.5}, 0.0, {:.5}, {:.5}) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
+                pc += 4;
+            }
+            21 => {
+                // ROTATE_Y
+                body.push_str(&format!("current_p = mat3({:.5}, 0.0, {:.5}, 0.0, 1.0, 0.0, {:.5}, 0.0, {:.5}) * current_p;\n", bytecode[pc+1], -bytecode[pc+2], bytecode[pc+2], bytecode[pc+1]));
+                pc += 4;
+            }
+            22 => {
+                // ROTATE_Z
+                body.push_str(&format!("current_p = mat3({:.5}, {:.5}, 0.0, {:.5}, {:.5}, 0.0, 0.0, 0.0, 1.0) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
+                pc += 4;
+            }
+            23 => {
+                // SCALE
+                body.push_str(&format!(
+                    "current_scale *= {:.5};\ncurrent_p *= vec3({:.5}, {:.5}, {:.5});\n",
+                    bytecode[pc + 4],
+                    bytecode[pc + 1],
+                    bytecode[pc + 2],
+                    bytecode[pc + 3]
+                ));
+                pc += 8;
+            }
+            24 => {
+                // MOVE
+                body.push_str(&format!(
+                    "current_p -= vec3({:.5}, {:.5}, {:.5});\n",
+                    bytecode[pc + 1],
+                    bytecode[pc + 2],
+                    bytecode[pc + 3]
+                ));
+                pc += 4;
+            }
+            26 => {
+                // REPEAT
+                body.push_str(&format!(
+                    "current_p = opRep(current_p, vec3({:.5}, {:.5}, {:.5}));\n",
+                    bytecode[pc + 1],
+                    bytecode[pc + 2],
+                    bytecode[pc + 3]
+                ));
+                pc += 4;
+            }
+            25 => {
+                // POP_TRANSFORM
+                tsp -= 1;
+                body.push_str(&format!(
+                    "current_p = p{}; current_scale = sc{};\n",
+                    tsp, tsp
+                ));
+                pc += 4;
+            }
+            30 => {
+                // PUSH_COLOR
+                body.push_str(&format!(
+                    "c{} = current_col; current_col = vec3({:.5}, {:.5}, {:.5});\n",
+                    csp,
+                    bytecode[pc + 1],
+                    bytecode[pc + 2],
+                    bytecode[pc + 3]
+                ));
+                csp += 1;
+                pc += 4;
+            }
+            31 => {
+                // POP_COLOR
+                csp -= 1;
+                body.push_str(&format!("current_col = c{};\n", csp));
+                pc += 4;
+            }
+            _ => {
+                pc += 4;
+            }
+        }
+    }
+
+    if sp > 0 {
+        body.push_str("    return s0;\n");
+    } else {
+        body.push_str("    return Hit(999999.0, vec3(0.0), 0);\n");
+    }
+
+    body
+}
+
 pub fn compile_pipeline_async(
-    device: Arc<wgpu::Device>,          // Changed to Arc
-    layout: Arc<wgpu::PipelineLayout>,  // Changed to Arc
+    device: Arc<wgpu::Device>,         // Changed to Arc
+    layout: Arc<wgpu::PipelineLayout>, // Changed to Arc
     format: wgpu::TextureFormat,
     bytecode: Vec<f32>,
     tx: mpsc::Sender<wgpu::RenderPipeline>,
 ) {
     std::thread::spawn(move || {
-        let mut body = String::new();
-        let mut pc = 0;
-        
-        let mut sp = 0;
-        let mut tsp = 0;
-        let mut csp = 0;
-
-        while pc < bytecode.len() {
-            let iop = bytecode[pc] as i32;
-            
-            if iop >= 20 && iop <= 26 && iop != 25 {
-                body.push_str(&format!("p{} = current_p; sc{} = current_scale;\n", tsp, tsp));
-                tsp += 1;
-            }
-
-            match iop {
-                0 => break, // OP_HALT
-                1 => { // SPHERE
-                    body.push_str(&format!("s{} = Hit(sdSphere(current_p, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2] as i32));
-                    sp += 1;
-                    pc += 4;
-                }
-                2 => { // BOX
-                    body.push_str(&format!("s{} = Hit(sdBox(current_p, vec3({:.5}, {:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3], bytecode[pc+4] as i32));
-                    sp += 1;
-                    pc += 8;
-                }
-                3 => { // CYLINDER
-                    body.push_str(&format!("s{} = Hit(sdCylinder(current_p, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+2], bytecode[pc+1], bytecode[pc+3] as i32));
-                    sp += 1;
-                    pc += 4;
-                }
-                4 => { // CONE
-                    body.push_str(&format!("s{} = Hit(sdCappedCone(current_p, {:.5}, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+3], bytecode[pc+1], bytecode[pc+2], bytecode[pc+4] as i32));
-                    sp += 1;
-                    pc += 8;
-                }
-                5 => { // TORUS
-                    body.push_str(&format!("s{} = Hit(sdTorus(current_p, vec2({:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3] as i32));
-                    sp += 1;
-                    pc += 4;
-                }
-                10 => { // UNION
-                    sp -= 1; let b = sp;
-                    sp -= 1; let a = sp;
-                    body.push_str(&format!("s{} = opU(s{}, s{});\n", a, a, b));
-                    sp += 1;
-                    pc += 4;
-                }
-                11 => { // DIFF
-                    sp -= 1; let b = sp;
-                    sp -= 1; let a = sp;
-                    body.push_str(&format!("s{} = opS(s{}, s{});\n", a, a, b));
-                    sp += 1;
-                    pc += 4;
-                }
-                12 => { // INTERSECT
-                    sp -= 1; let b = sp;
-                    sp -= 1; let a = sp;
-                    body.push_str(&format!("s{} = opI(s{}, s{});\n", a, a, b));
-                    sp += 1;
-                    pc += 4;
-                }
-                20 => { // ROTATE_X
-                    body.push_str(&format!("current_p = mat3(1.0, 0.0, 0.0, 0.0, {:.5}, {:.5}, 0.0, {:.5}, {:.5}) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
-                    pc += 4;
-                }
-                21 => { // ROTATE_Y
-                    body.push_str(&format!("current_p = mat3({:.5}, 0.0, {:.5}, 0.0, 1.0, 0.0, {:.5}, 0.0, {:.5}) * current_p;\n", bytecode[pc+1], -bytecode[pc+2], bytecode[pc+2], bytecode[pc+1]));
-                    pc += 4;
-                }
-                22 => { // ROTATE_Z
-                    body.push_str(&format!("current_p = mat3({:.5}, {:.5}, 0.0, {:.5}, {:.5}, 0.0, 0.0, 0.0, 1.0) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
-                    pc += 4;
-                }
-                23 => { // SCALE
-                    body.push_str(&format!("current_scale *= {:.5};\ncurrent_p *= vec3({:.5}, {:.5}, {:.5});\n", bytecode[pc+4], bytecode[pc+1], bytecode[pc+2], bytecode[pc+3]));
-                    pc += 8;
-                }
-                24 => { // MOVE
-                    body.push_str(&format!("current_p -= vec3({:.5}, {:.5}, {:.5});\n", bytecode[pc+1], bytecode[pc+2], bytecode[pc+3]));
-                    pc += 4;
-                }
-                26 => { // REPEAT
-                    body.push_str(&format!("current_p = opRep(current_p, vec3({:.5}, {:.5}, {:.5}));\n", bytecode[pc+1], bytecode[pc+2], bytecode[pc+3]));
-                    pc += 4;
-                }
-                25 => { // POP_TRANSFORM
-                    tsp -= 1;
-                    body.push_str(&format!("current_p = p{}; current_scale = sc{};\n", tsp, tsp));
-                    pc += 4;
-                }
-                30 => { // PUSH_COLOR
-                    body.push_str(&format!("c{} = current_col; current_col = vec3({:.5}, {:.5}, {:.5});\n", csp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3]));
-                    csp += 1;
-                    pc += 4;
-                }
-                31 => { // POP_COLOR
-                    csp -= 1;
-                    body.push_str(&format!("current_col = c{};\n", csp));
-                    pc += 4;
-                }
-                _ => { pc += 4; }
-            }
-        }
-        
-        if sp > 0 {
-            body.push_str("    return s0;\n");
-        } else {
-            body.push_str("    return Hit(999999.0, vec3(0.0), 0);\n");
-        }
-
+        let body = generate_shader_body(&bytecode);
         let full_source = SHADER_TEMPLATE.replace("{GENERATED_BODY}", &body);
 
         let fs_module_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -284,7 +350,11 @@ pub fn compile_pipeline_async(
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Async Pipeline"),
                 layout: Some(&layout),
-                vertex: wgpu::VertexState { module: &vs_module, entry_point: "main", buffers: &[] },
+                vertex: wgpu::VertexState {
+                    module: &vs_module,
+                    entry_point: "main",
+                    buffers: &[],
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &fs_module,
                     entry_point: "main",
@@ -303,4 +373,57 @@ pub fn compile_pipeline_async(
             let _ = tx.send(pipeline);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_bytecode_returns_a_miss() {
+        let body = generate_shader_body(&[]);
+        assert!(body.contains("return Hit(999999.0, vec3(0.0), 0);"));
+        assert!(!body.contains("return s0;"));
+    }
+
+    #[test]
+    fn halt_opcode_stops_generation() {
+        let body = generate_shader_body(&[0.0, 0.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0]);
+        assert!(!body.contains("sdSphere"));
+    }
+
+    #[test]
+    fn sphere_opcode_emits_sdsphere_call() {
+        let bytecode = [1.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let body = generate_shader_body(&bytecode);
+        assert!(
+            body.contains(
+                "s0 = Hit(sdSphere(current_p, 5.00000) * current_scale, current_col, 1);"
+            )
+        );
+        assert!(body.contains("return s0;"));
+    }
+
+    #[test]
+    fn union_opcode_combines_two_shapes() {
+        // sphere, sphere, union, halt
+        let bytecode = [
+            1.0, 1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let body = generate_shader_body(&bytecode);
+        assert!(body.contains("s0 = opU(s0, s1);"));
+        assert!(body.contains("return s0;"));
+    }
+
+    #[test]
+    fn rotate_and_pop_transform_restore_state() {
+        // rotateX(c=1,s=0), sphere, pop-transform, halt
+        let bytecode = [
+            20.0, 1.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let body = generate_shader_body(&bytecode);
+        assert!(body.contains("p0 = current_p; sc0 = current_scale;"));
+        assert!(body.contains("current_p = mat3(1.0, 0.0, 0.0, 0.0, 1.00000, 0.00000, 0.0, -0.00000, 1.00000) * current_p;"));
+        assert!(body.contains("current_p = p0; current_scale = sc0;"));
+    }
 }

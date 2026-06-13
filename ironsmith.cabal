@@ -40,3 +40,26 @@ executable ironsmith
                       network,
                       bytestring,
                       array
+
+test-suite ironsmith-test
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   test, src
+    other-modules:    AST,
+                      Parser,
+                      Evaluator,
+                      Exporter,
+                      ParserSpec,
+                      EvaluatorSpec,
+                      ExporterSpec
+    default-language: Haskell2010
+    ghc-options:      -threaded
+    build-depends:    base >= 4.14 && < 5,
+                      hspec,
+                      megaparsec,
+                      text,
+                      containers,
+                      parser-combinators,
+                      directory,
+                      array
+    build-tool-depends: hspec-discover:hspec-discover

@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
-use std::time::Instant;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
-use std::io::Write; 
-use std::sync::mpsc;
 
 use crate::camera::Camera;
 use crate::shader;
@@ -16,11 +16,11 @@ pub struct ShaderUniforms {
     pub resolution: [f32; 2],
     pub time: f32,
     pub camera_dist: f32,
-    pub rotation: [f32; 2], 
-    pub shadow_enabled: f32,  // was padding[0], reused
-    pub march_steps: f32,     // was padding[1], reused
+    pub rotation: [f32; 2],
+    pub shadow_enabled: f32, // was padding[0], reused
+    pub march_steps: f32,    // was padding[1], reused
     pub target_pos: [f32; 4],
-    pub bg_color: [f32; 4],   // NEW: rgb + unused w, added at end
+    pub bg_color: [f32; 4], // NEW: rgb + unused w, added at end
 }
 
 pub struct Renderer<'a> {
@@ -29,16 +29,16 @@ pub struct Renderer<'a> {
     queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
-    
+
     render_pipeline: wgpu::RenderPipeline,
     pipeline_layout: Arc<wgpu::PipelineLayout>, // Wrapped in Arc
-    
+
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
-    log_path: PathBuf, 
-    
+    log_path: PathBuf,
+
     pipeline_rx: mpsc::Receiver<wgpu::RenderPipeline>,
     pipeline_tx: mpsc::Sender<wgpu::RenderPipeline>,
 }
@@ -48,14 +48,19 @@ impl<'a> Renderer<'a> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }).await.context("Failed to find wgpu adapter")?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            })
+            .await
+            .context("Failed to find wgpu adapter")?;
 
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None).await?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .await?;
         let device = Arc::new(device); // Convert device to Arc
-        
+
         let surface_caps = surface.get_capabilities(&adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -109,34 +114,52 @@ impl<'a> Renderer<'a> {
             label: None,
         });
 
-        let pipeline_layout = Arc::new(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        })); // Convert to Arc
+        let pipeline_layout = Arc::new(device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            },
+        )); // Convert to Arc
 
         let (pipeline_tx, pipeline_rx) = mpsc::channel();
 
         shader::compile_pipeline_async(
             device.clone(),
-            pipeline_layout.clone(), 
+            pipeline_layout.clone(),
             config.format,
-            vec![0.0], 
-            pipeline_tx.clone()
+            vec![0.0],
+            pipeline_tx.clone(),
         );
 
-        let render_pipeline = pipeline_rx.recv().expect("Initial shader compilation failed");
+        let render_pipeline = pipeline_rx
+            .recv()
+            .expect("Initial shader compilation failed");
 
         Ok(Self {
-            surface, device, queue, config, size,
-            render_pipeline, pipeline_layout, uniform_buffer,
-            bind_group, uniforms, start_time: Instant::now(), log_path,
-            pipeline_rx, pipeline_tx
+            surface,
+            device,
+            queue,
+            config,
+            size,
+            render_pipeline,
+            pipeline_layout,
+            uniform_buffer,
+            bind_group,
+            uniforms,
+            start_time: Instant::now(),
+            log_path,
+            pipeline_rx,
+            pipeline_tx,
         })
     }
 
     pub fn log_message(&self, msg: &str) {
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.log_path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+        {
             let _ = writeln!(file, "{}", msg);
         }
     }
@@ -158,9 +181,18 @@ impl<'a> Renderer<'a> {
         self.uniforms.shadow_enabled = if camera.shadow_enabled { 1.0 } else { 0.0 };
         self.uniforms.march_steps = camera.march_steps as f32;
         self.uniforms.target_pos = [camera.pan_x, camera.pan_y, camera.pan_z, 0.0];
-        self.uniforms.bg_color = [camera.bg_color[0], camera.bg_color[1], camera.bg_color[2], 0.0];
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.uniforms]));
-        
+        self.uniforms.bg_color = [
+            camera.bg_color[0],
+            camera.bg_color[1],
+            camera.bg_color[2],
+            0.0,
+        ];
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.uniforms]),
+        );
+
         if let Ok(new_pipeline) = self.pipeline_rx.try_recv() {
             self.render_pipeline = new_pipeline;
         }
@@ -172,22 +204,32 @@ impl<'a> Renderer<'a> {
             self.pipeline_layout.clone(),
             self.config.format,
             bytecode,
-            self.pipeline_tx.clone()
+            self.pipeline_tx.clone(),
         );
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
-                depth_stencil_attachment: None, occlusion_query_set: None, timestamp_writes: None,
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
             });
             rp.set_pipeline(&self.render_pipeline);
             rp.set_bind_group(0, &self.bind_group, &[]);
