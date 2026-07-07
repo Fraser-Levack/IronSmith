@@ -157,6 +157,9 @@ evalSDF instrs p0 = go 0 p0 1.0 [] []
             26 -> let p' = opRep p (at pc 1, at pc 2, at pc 3) in go (pc+1) p' scale hits ((p,scale):xforms)
             30 -> go (pc+1) p scale hits xforms
             31 -> go (pc+1) p scale hits xforms
+            -- Lighting opcodes don't affect distance
+            40 -> go (pc+1) p scale hits xforms
+            41 -> go (pc+1) p scale hits xforms
             _  -> finish hits
 
     finish (d:_) = d

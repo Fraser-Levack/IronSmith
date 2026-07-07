@@ -1,7 +1,9 @@
 mod camera;
+mod filter;
 mod network;
 mod renderer;
 mod shader;
+mod video;
 
 use anyhow::Result;
 use std::io::Write;
@@ -22,6 +24,26 @@ fn get_config_dir() -> PathBuf {
     dirs::config_dir()
         .expect("Config dir error")
         .join("ironsmith")
+}
+
+fn get_filters_dir() -> PathBuf {
+    get_config_dir().join("filters")
+}
+
+/// Resolve a filter name (from CMD:SET_FILTER:<name>) to its GLSL body.
+/// Names are restricted to simple identifiers so a command can never
+/// escape the filters directory.
+fn load_filter(name: &str) -> Option<String> {
+    if name.is_empty() || name == "none" {
+        return Some(filter::PASSTHROUGH.to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    std::fs::read_to_string(get_filters_dir().join(format!("{}.glsl", name))).ok()
 }
 
 fn setup_panic_logger() {
@@ -51,12 +73,18 @@ async fn run() -> Result<()> {
 
     let mut renderer = Renderer::new(window.clone(), log_path).await?;
 
+    // Ship the example filters so users have working files to copy and mod.
+    if let Err(e) = filter::install_default_filters(&get_filters_dir()) {
+        renderer.log_message(&format!("Failed to install default filters: {}", e));
+    }
+
     let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
     listener
         .set_nonblocking(true)
         .expect("Cannot set non-blocking");
 
     let mut camera = Camera::new();
+    let mut last_frame = std::time::Instant::now();
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
@@ -77,7 +105,52 @@ async fn run() -> Result<()> {
 
                     for msg in network::drain_sockets(&listener) {
                         match msg {
-                            NetMessage::Command(cmd) => camera.process_command(&cmd),
+                            NetMessage::Command(cmd) => {
+                                if let Some(name) = cmd.strip_prefix("CMD:SET_FILTER:") {
+                                    match load_filter(name.trim()) {
+                                        Some(body) => renderer.update_filter(body),
+                                        None => renderer.log_message(&format!(
+                                            "Unknown filter: {}",
+                                            name.trim()
+                                        )),
+                                    }
+                                } else if let Some(rest) = cmd.strip_prefix("CMD:EXPORT_VIDEO:") {
+                                    // Payload is "<fps>:<base path>"; only split
+                                    // the first ':' since paths contain colons.
+                                    let (fps_str, base_path) =
+                                        rest.split_once(':').unwrap_or(("30", rest));
+                                    let fps = fps_str.trim().parse().unwrap_or(30);
+                                    let win = window.clone();
+                                    let result = renderer.export_video(
+                                        &mut camera,
+                                        fps,
+                                        base_path.trim(),
+                                        |done, total| {
+                                            win.set_title(&format!(
+                                                "IronSmith Forge - exporting video: frame {}/{}",
+                                                done, total
+                                            ));
+                                        },
+                                    );
+                                    match result {
+                                        Ok(path) => window.set_title(&format!(
+                                            "IronSmith Forge - video saved: {}",
+                                            path.display()
+                                        )),
+                                        Err(e) => {
+                                            renderer.log_message(&format!(
+                                                "Video export failed: {}",
+                                                e
+                                            ));
+                                            window.set_title(
+                                                "IronSmith Forge - video export failed (see forge.log)",
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    camera.process_command(&cmd)
+                                }
+                            }
                             NetMessage::Bytecode(code) => latest_bytecode = Some(code),
                         }
                     }
@@ -87,7 +160,13 @@ async fn run() -> Result<()> {
                         renderer.update_scene(bytecode);
                     }
 
-                    camera.update_lerp();
+                    let now = std::time::Instant::now();
+                    // Clamp dt so a stall (e.g. window drag) can't make the
+                    // animation jump a whole loop in one frame.
+                    let dt = (now - last_frame).as_secs_f32().min(0.1);
+                    last_frame = now;
+
+                    camera.update_lerp(dt);
                     renderer.update(&camera);
 
                     match renderer.render() {

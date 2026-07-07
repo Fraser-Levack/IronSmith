@@ -5,7 +5,8 @@ import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectory
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>), takeDirectory)
 import System.Info (os)
-import Data.List (nub)
+import Data.Char (isAlphaNum)
+import Data.List (nub, intercalate)
 import qualified Data.List.NonEmpty as NE
 import Control.Exception (catch, SomeException)
 import Control.Concurrent (forkIO) 
@@ -84,6 +85,14 @@ getConfigPath = do
     dir <- getConfigDir
     return (dir </> "ironsmith.toml")
 
+-- | Where the viewer installs and loads post-process filters from.
+--   The viewer creates this and fills it with the built-in examples
+--   on first launch.
+getFiltersDir :: IO FilePath
+getFiltersDir = do
+    dir <- getConfigDir
+    return (dir </> "filters")
+
 loadRecents :: IO [FilePath]
 loadRecents = do
     cachePath <- getCachePath
@@ -136,18 +145,51 @@ sendConfig cfg = do
     sendCommand (if cfgShadowEnabled cfg then "CMD:SHADOW_ON" else "CMD:SHADOW_OFF")
     -- March steps
     sendCommand ("CMD:SET_MARCH_STEPS:" ++ show (cfgMarchSteps cfg))
+    -- Post-process filter
+    sendCommand ("CMD:SET_FILTER:" ++ cfgFilter cfg)
+    -- Exposure
+    sendCommand ("CMD:SET_EXPOSURE:" ++ show (cfgExposure cfg))
 
 
--- | COMPILER BRIDGE
-compileAndSave :: (Float, Float, Float) -> Bool -> String -> IO (Maybe (String, Int))
-compileAndSave defaultColor isHardSave code =
+-- | Find the first line (1-based) where an identifier appears as a whole
+--   token, so validation errors can highlight it in the editor. Matching
+--   whole tokens matters: a half-typed "cub" must point at its own line,
+--   not at a "cube(...)" earlier in the file.
+findIdentLine :: String -> String -> Int
+findIdentLine name code =
+    case [ i | (i, l) <- zip [1 ..] (lines code), name `elem` identTokens l ] of
+        (i:_) -> i
+        []    -> 0
+  where
+    isIdentChar c = isAlphaNum c || c == '_'
+    identTokens [] = []
+    identTokens s@(c:_)
+        | isIdentChar c = let (tok, rest) = span isIdentChar s
+                          in tok : identTokens rest
+        | otherwise     = identTokens (dropWhile (not . isIdentChar) s)
+
+-- | Parse then validate, sharing the error format both the live compiler
+--   and the OBJ exporter report to the editor.
+parseAndValidate :: String -> Either (String, Int) Script
+parseAndValidate code =
     case parse pScript "editor" code of
-        Left bundle -> do
+        Left bundle ->
             let errStr = errorBundlePretty bundle
                 firstErr = NE.head (bundleErrors bundle)
                 (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
                 lineNum = unPos (sourceLine (pstateSourcePos posState))
-            return $ Just (errStr, lineNum)
+            in Left (errStr, lineNum)
+
+        Right astScript ->
+            case validateScript astScript of
+                Left (ident, msg) -> Left (msg, findIdentLine ident code)
+                Right ()          -> Right astScript
+
+-- | COMPILER BRIDGE
+compileAndSave :: (Float, Float, Float) -> Bool -> String -> IO (Maybe (String, Int))
+compileAndSave defaultColor isHardSave code =
+    case parseAndValidate code of
+        Left err -> return (Just err)
 
         Right astScript -> do
             -- Generate the Bytecode instead of GLSL!
@@ -156,23 +198,33 @@ compileAndSave defaultColor isHardSave code =
             -- Beam the raw bytes to the Rust SSBO
             sendBytecode bytecode
 
+            -- Camera keyframes ride alongside the geometry as a command.
+            -- Always sent, so removing the last camera(...) statement
+            -- clears the animation in the viewer too.
+            sendCommand (animTrackCmd astScript)
+
             -- (Skipping the hard-save logic for the output.glsl file for now,
             -- since we aren't generating strings anymore)
 
             return Nothing
+
+-- | Serialize a script's camera keyframes for the viewer:
+--   CMD:SET_ANIM:t,yaw,pitch,dist,tx,ty,tz;t,...  (angles in radians)
+animTrackCmd :: Script -> String
+animTrackCmd script =
+    "CMD:SET_ANIM:" ++ intercalate ";" (map (intercalate "," . map show) (cameraTrack script))
+
+-- | True if the script defines a camera animation worth playing/exporting.
+scriptHasAnimation :: Script -> Bool
+scriptHasAnimation = not . null . cameraTrack
 
 -- | EXPORT BRIDGE
 --   Parses and compiles the script just like 'compileAndSave', then meshes
 --   the resulting SDF scene and writes it out as a Wavefront .obj file.
 exportModelToOBJ :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
 exportModelToOBJ defaultColor code objPath resolution report =
-    case parse pScript "editor" code of
-        Left bundle -> do
-            let errStr = errorBundlePretty bundle
-                firstErr = NE.head (bundleErrors bundle)
-                (_, posState) = reachOffset (errorOffset firstErr) (bundlePosState bundle)
-                lineNum = unPos (sourceLine (pstateSourcePos posState))
-            return $ Left (errStr, lineNum)
+    case parseAndValidate code of
+        Left err -> return (Left err)
 
         Right astScript -> do
             let bytecode = compileToBytecode defaultColor astScript

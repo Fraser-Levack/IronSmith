@@ -12,7 +12,12 @@ pub fn drain_sockets(listener: &TcpListener) -> Vec<NetMessage> {
 
     while let Ok((mut stream, _)) = listener.accept() {
         let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(1)));
+        // Senders (the Haskell TUI) connect, write, and close immediately,
+        // so data normally arrives within a millisecond. The timeout only
+        // caps how long we wait when it hasn't: 1ms was so tight it raced
+        // the sender and randomly dropped whole commands. 250ms is still a
+        // bounded worst-case stall but makes local delivery reliable.
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
 
         let mut buffer = Vec::new();
         let _ = stream.read_to_end(&mut buffer);

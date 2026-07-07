@@ -29,6 +29,19 @@ spec = do
         it "parses negative numbers" $
             parseOk pExpr "-5" `shouldBe` Just (Lit (-5))
 
+    describe "pCameraKey" $ do
+        it "parses a 4-argument camera keyframe (target defaults to origin)" $
+            parseOk pStatement "camera(0, 90, 20, 15)"
+                `shouldBe` Just (CameraKey (Lit 0) (Lit 90) (Lit 20) (Lit 15) (Lit 0) (Lit 0) (Lit 0))
+
+        it "parses a 7-argument camera keyframe with an explicit target" $
+            parseOk pStatement "camera(2, 180, 30, 10, 1, 2, 3)"
+                `shouldBe` Just (CameraKey (Lit 2) (Lit 180) (Lit 30) (Lit 10) (Lit 1) (Lit 2) (Lit 3))
+
+        it "accepts expressions and variables in keyframes" $
+            parseOk pStatement "camera(t, spin * 2, 20, 15)"
+                `shouldBe` Just (CameraKey (Var "t") (Mul (Var "spin") (Lit 2)) (Lit 20) (Lit 15) (Lit 0) (Lit 0) (Lit 0))
+
     describe "pShape" $ do
         it "parses a sphere" $
             parseOk pShape "sphere(5)" `shouldBe` Just (Sphere (Lit 5))
@@ -103,3 +116,15 @@ spec = do
 
         it "rejects malformed input" $
             parseOk pScript "sphere(" `shouldBe` Nothing
+
+        it "parses a light statement with default intensity" $
+            parseOk pScript "light(10, 20, 5)\nsphere(1)"
+                `shouldBe` Just [Light (Lit 10) (Lit 20) (Lit 5) (Lit 1), Draw (Sphere (Lit 1))]
+
+        it "parses a light statement with explicit intensity" $
+            parseOk pScript "light(10, 20, 5, 0.5)"
+                `shouldBe` Just [Light (Lit 10) (Lit 20) (Lit 5) (Lit 0.5)]
+
+        it "still allows light as a variable name" $
+            parseOk pScript "light = 3\nsphere(light)"
+                `shouldBe` Just [Assign "light" (Lit 3), Draw (Sphere (Var "light"))]

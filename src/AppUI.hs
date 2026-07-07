@@ -99,12 +99,16 @@ drawEditor st = ui
             Normal            -> withAttr (attrName "success") $ str "Status: OK"
             Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"
             Exported path     -> withAttr (attrName "saved")   $ str ("Status: EXPORTED TO " ++ takeFileName path)
+            FilterSet name    -> withAttr (attrName "saved")   $ str ("Status: FILTER -> " ++ name)
+            Info msg          -> withAttr (attrName "saved")   $ str ("Status: " ++ msg)
             ErrorMsg e _      -> withAttr (attrName "error")   $ vLimit 8 $ vBox (map str (lines e))
 
-    modeIndicator = case _viewerMode st of
-        OrbitMode  -> withAttr (attrName "title") $ str " -- ORBIT EDIT -- "
-        StaticMode -> withAttr (attrName "success") $ str " -- STATIC EDIT -- "
-        FlyMode    -> withAttr (attrName "errorBg") $ str " -- FLY MODE (WASD) -- "
+    modeIndicator
+        | _animPlaying st = withAttr (attrName "saved") $ str " -- ANIMATION PLAYING -- "
+        | otherwise = case _viewerMode st of
+            OrbitMode  -> withAttr (attrName "title") $ str " -- ORBIT EDIT -- "
+            StaticMode -> withAttr (attrName "success") $ str " -- STATIC EDIT -- "
+            FlyMode    -> withAttr (attrName "errorBg") $ str " -- FLY MODE (WASD) -- "
 
     ui = withBorderStyle unicode
          $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
@@ -257,5 +261,5 @@ colorKeyword :: String -> Widget Name
 colorKeyword w
     | w `elem` ["cube", "sphere", "cylinder", "cone", "torus"] = withAttr (attrName "shape") (str w)
     | w `elem` ["union", "difference", "intersection", "group"] = withAttr (attrName "csg") (str w)
-    | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint"] = withAttr (attrName "transform") (str w)
+    | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint", "light", "camera"] = withAttr (attrName "transform") (str w)
     | otherwise = str w

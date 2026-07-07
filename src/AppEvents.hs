@@ -9,14 +9,14 @@ import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (get, put)
 import Control.Concurrent (forkIO, threadDelay)
-import System.Directory (doesFileExist, makeAbsolute)
-import System.FilePath (replaceExtension)
+import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, makeAbsolute)
+import System.FilePath (replaceExtension, takeExtension, dropExtension)
 import Data.Char (isDigit, toLower)
-import Data.List (sort)
-import Data.Maybe (listToMaybe)
+import Data.List (sort, elemIndex)
+import Data.Maybe (listToMaybe, fromMaybe)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, IronConfig)
+import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, IronConfig)
 import AppCore
 
 -- | Write `code` to `path`, recompile/preview it, and record it in the
@@ -247,6 +247,21 @@ runCommand _ CmdResetCamera = do
     liftIO $ sendCommand "CMD:RESET_CAMERA"
     return ()
 
+-- Cycle through "none" plus every .glsl file in the filters directory.
+-- The viewer installs the built-in examples there on first launch, and
+-- any file the user drops in is picked up automatically.
+runCommand _ CmdCycleFilter = do
+    st <- get
+    filtersDir <- liftIO getFiltersDir
+    dirExists <- liftIO $ doesDirectoryExist filtersDir
+    files <- if dirExists then liftIO $ listDirectory filtersDir else return []
+    let names   = sort [ dropExtension f | f <- files, takeExtension f == ".glsl" ]
+        options = "none" : names
+        idx     = fromMaybe (-1) (elemIndex (_currentFilter st) options)
+        next    = options !! ((idx + 1) `mod` length options)
+    liftIO $ sendCommand ("CMD:SET_FILTER:" ++ next)
+    put (st { _currentFilter = next, _status = FilterSet next })
+
 runCommand _ CmdSettings = do
     st <- get
     configPath <- liftIO getConfigPath
@@ -278,6 +293,45 @@ runCommand chan CmdExportOBJ = do
                                           (\p -> writeBChan chan (ExportProgress p))
                 writeBChan chan (ExportFinished result)
             return ()
+
+-- Toggle looping playback of the script's camera(...) animation. The
+-- keyframe track itself is (re)sent on every compile, so the viewer
+-- already has the latest one by the time this runs.
+runCommand _ CmdToggleAnimation = do
+    st <- get
+    if _animPlaying st
+        then do
+            liftIO $ sendCommand "CMD:ANIM_STOP"
+            put (st { _animPlaying = False, _status = Info "Animation stopped" })
+        else do
+            let code = unlines $ E.getEditContents (_editor st)
+            case parseAndValidate code of
+                Right script | scriptHasAnimation script -> do
+                    liftIO $ sendCommand "CMD:ANIM_PLAY"
+                    put (st { _animPlaying = True
+                            , _status = Info "Animation playing - run again to stop" })
+                _ -> put (st { _status = ErrorMsg "No animation: add camera(t, yaw, pitch, dist) keyframes first" 0 })
+
+-- Ask the viewer to render the animation to a video file next to the
+-- .irsm file. The viewer picks .mp4 (ffmpeg on PATH) or .gif (built-in)
+-- and reports progress in its window title / forge.log.
+runCommand _ CmdExportVideo = do
+    st <- get
+    case _currentFile st of
+        Nothing -> put (st { _status = ErrorMsg "Save the file before exporting a video" 0 })
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+            case parseAndValidate code of
+                Left (e, lineNum) -> put (st { _status = ErrorMsg e lineNum })
+                Right script
+                    | not (scriptHasAnimation script) ->
+                        put (st { _status = ErrorMsg "No animation: add camera(t, yaw, pitch, dist) keyframes first" 0 })
+                    | otherwise -> do
+                        -- Re-send the scene so the export matches the editor.
+                        _ <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) False code
+                        let fps = cfgVideoFps (_config st)
+                        liftIO $ sendCommand ("CMD:EXPORT_VIDEO:" ++ show fps ++ ":" ++ dropExtension path)
+                        put (st { _status = Info "Video export started - see the viewer window for progress" })
 
 runCommand _ CmdSave = do
     st <- get
@@ -407,7 +461,8 @@ handleConfigEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
     liftIO $ sendConfig newConfig
     let prevMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""]
                    then Splash else Editing
-    put (st { _mode = prevMode, _config = newConfig, _status = Saved })
+    put (st { _mode = prevMode, _config = newConfig, _status = Saved
+            , _currentFilter = cfgFilter newConfig })
 
 -- Everything else: pass through to the editor widget
 handleConfigEditing _ ev = do

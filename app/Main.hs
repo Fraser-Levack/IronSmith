@@ -9,7 +9,7 @@ import System.Directory (doesFileExist)
 import Control.Concurrent (threadDelay)
 
 import AppState
-import Config (loadConfig, defaultConfig, cfgDefaultObjectColor)
+import Config (loadConfig, defaultConfig, cfgDefaultObjectColor, cfgFilter)
 import AppCore
 import AppUI
 import AppEvents
@@ -81,6 +81,8 @@ main = do
             , _editVersion  = 0
             , _config       = cfg                               -- NEW
             , _exportProgress = Nothing
+            , _currentFilter = cfgFilter cfg
+            , _animPlaying  = False
             }
             
     -- NEW: Boot up customMain instead of defaultMain

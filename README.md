@@ -85,7 +85,65 @@ difference(
     cube(10, 10, 10), 
     sphere(6, 16)
 )
+
+// Materials and Paints
+paint(color, shape) // color is a hex code (e.g., "#FF5733")
+
+material(type, shape) // type can be "metal", "plastic", "matte", "neon"
+
+// Lighting (optional; the last light statement wins)
+light(10, 20, 5)        // directional light shining from (10, 20, 5) toward the origin
+light(10, 20, 5, 0.4)   // same, with intensity 0.4 (default 1.0)
+
+// Camera animation keyframes: camera(time, yaw, pitch, dist [, x, y, z])
+// Two or more keyframes define a looping camera path (angles in degrees;
+// the optional x, y, z is the point the camera looks at, default origin).
+camera(0, 0, 20, 25)
+camera(4, 360, 20, 25)  // a 4-second full turntable orbit
 ```
+
+Pair a dim `light(...)` with the `exposure` setting in `ironsmith.toml` (Ctrl+G) to fine-tune viewport brightness.
+
+## 🎬 Animation & Video Export
+
+Add `camera(...)` keyframes to a script and press `Ctrl+A` to play the camera path as a smooth loop in the viewer (press again to stop). The animation hot-reloads with the rest of the script as you type.
+
+Press `Ctrl+Shift+V` to export the animation as a video next to your `.irsm` file:
+
+* With **ffmpeg** on your PATH you get an `.mp4` (best quality).
+* Without it, IronSmith writes an animated `.gif` — no extra installs needed.
+
+Frames are rendered offline at a fixed timestep (`video_fps` in `ironsmith.toml`, default 30), so the output is perfectly smooth regardless of GPU speed, and the active post-process filter is baked in — an `ascii`-filtered flythrough exports exactly as you see it. The viewer window title shows export progress.
+
+## 🎨 Filters (Moddable Post-Processing)
+
+IronSmith's viewport is moddable: the renderer applies a user-editable GLSL **filter** on top of the scene every frame. On first launch the viewer creates a `filters/` folder in your IronSmith config directory (`%APPDATA%\ironsmith\filters` on Windows, `~/.config/ironsmith/filters` on Linux/macOS) containing the built-in examples:
+
+* **`edge_detection`** — Sobel edges: glowing outlines over a dimmed scene
+* **`heatmap`** — thermal-camera look mapping brightness to a cold→hot ramp
+* **`ascii`** — redraws the model as live text that morphs in real time
+* **`passthrough`** — the identity filter, fully commented as a template for your own
+
+**Switching filters:** press `Ctrl+F` in the editor to cycle through every filter in the folder (plus "none"), or set a default in your settings (`Ctrl+G`):
+
+```toml
+[viewer]
+filter = ascii
+```
+
+**Writing your own:** copy `passthrough.glsl`, rename it, and define one function:
+
+```glsl
+vec4 apply(vec2 uv) {
+    // scene(uv)    -> vec4  the rendered scene at uv (0..1)
+    // luma(rgb)    -> float perceptual brightness
+    // u_resolution -> vec2  window size in pixels
+    // u_time       -> float seconds since launch
+    return scene(uv);
+}
+```
+
+Drop the file in the folder and it's instantly part of the `Ctrl+F` cycle. Filters are compiled with the same panic-safe pipeline as models — a broken filter never crashes the viewer, it just keeps the last working one.
 
 ## 🚩 Recently Made Demo models
 
@@ -108,6 +166,12 @@ difference(
 [x] Material and color parsing
 
 [x] Exporting generated SDFs to .obj meshes
+
+[x] Camera animation keyframes with looping playback
+
+[x] Exporting animations to video (.mp4 via ffmpeg, .gif built-in)
+
+[ ] Animating object transforms (move/rotate/scale over time)
 
 
 ## 🤝 Contributing

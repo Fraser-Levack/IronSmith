@@ -19,7 +19,7 @@ data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt | Conf
 data Name = CodeEditor | SaveEditor | OpenEditor | ConfigEditor | PaletteEditor
     deriving (Eq, Ord, Show)
 
-data AppStatus = Normal | Saved | Exported FilePath | ErrorMsg String Int
+data AppStatus = Normal | Saved | Exported FilePath | FilterSet String | Info String | ErrorMsg String Int
 
 data ViewerMode = OrbitMode | StaticMode | FlyMode
     deriving (Eq, Show)
@@ -41,6 +41,8 @@ data AppState = AppState
     , _editVersion  :: Int
     , _config       :: IronConfig
     , _exportProgress :: Maybe Float
+    , _currentFilter :: String -- active post-process filter name ("none" = off)
+    , _animPlaying  :: Bool -- viewer is looping the camera animation
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)
@@ -62,7 +64,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -74,6 +76,9 @@ commandConfigKey CmdSettings       = "settings"
 commandConfigKey CmdCycleViewMode  = "cycle_view_mode"
 commandConfigKey CmdResetCamera    = "reset_camera"
 commandConfigKey CmdExportOBJ      = "export_obj"
+commandConfigKey CmdCycleFilter    = "cycle_filter"
+commandConfigKey CmdToggleAnimation = "toggle_animation"
+commandConfigKey CmdExportVideo    = "export_video"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -84,6 +89,9 @@ commandLabel CmdSettings        = "Open Settings"
 commandLabel CmdCycleViewMode   = "Cycle Viewer Mode"
 commandLabel CmdResetCamera     = "Reset Camera"
 commandLabel CmdExportOBJ        = "Export to .OBJ"
+commandLabel CmdCycleFilter      = "Cycle Filter"
+commandLabel CmdToggleAnimation  = "Play/Stop Animation"
+commandLabel CmdExportVideo      = "Export Animation Video"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String

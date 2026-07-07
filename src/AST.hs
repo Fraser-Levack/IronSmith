@@ -31,10 +31,14 @@ data Shape
     deriving (Show, Eq)
 
 -- 3. Statements: A single line of code in IronSmith
-data Statement 
+data Statement
     = Assign String Expr -- e.g., x = 10
     | AssignShape String Shape
     | Draw Shape         -- e.g., cube(x, y, z)
+    | Light Expr Expr Expr Expr -- light(x, y, z) or light(x, y, z, intensity)
+    | CameraKey Expr Expr Expr Expr Expr Expr Expr
+      -- camera(t, yaw, pitch, dist) or camera(t, yaw, pitch, dist, tx, ty, tz):
+      -- a keyframe on the animation timeline at t seconds. Angles in degrees.
     deriving (Show, Eq)
 
 -- A full script is just a list of statements

@@ -289,8 +289,48 @@ pAssignShape = try $ do
 pDraw :: Parser Statement
 pDraw = Draw <$> pShape
 
+-- | light(x, y, z) places a directional light shining from that position
+--   toward the origin. An optional 4th argument sets its intensity
+--   (default 1.0). The last light statement in a script wins.
+pLight :: Parser Statement
+pLight = do
+    shapeKeyword "light"
+    x <- pExpr <?> "light X position"
+    _ <- symbol "," <?> "comma"
+    y <- pExpr <?> "light Y position"
+    _ <- symbol "," <?> "comma"
+    z <- pExpr <?> "light Z position"
+    i <- option (Lit 1.0) (symbol "," *> (pExpr <?> "light intensity"))
+    _ <- symbol ")" <?> "closing ')' for light"
+    return (Light x y z i)
+
+-- | camera(t, yaw, pitch, dist) places a camera keyframe at t seconds on
+--   the animation timeline. Yaw/pitch are in degrees. An optional trailing
+--   x, y, z sets the point the camera orbits/looks at (default: origin).
+--   Two or more keyframes define a looping camera animation.
+pCameraKey :: Parser Statement
+pCameraKey = do
+    shapeKeyword "camera"
+    t <- pExpr <?> "keyframe time (seconds) for camera"
+    _ <- symbol "," <?> "comma"
+    yaw <- pExpr <?> "camera yaw (degrees)"
+    _ <- symbol "," <?> "comma"
+    pitch <- pExpr <?> "camera pitch (degrees)"
+    _ <- symbol "," <?> "comma"
+    dist <- pExpr <?> "camera distance"
+    (tx, ty, tz) <- option (Lit 0, Lit 0, Lit 0) $ do
+        _ <- symbol ","
+        x <- pExpr <?> "camera target X"
+        _ <- symbol "," <?> "comma"
+        y <- pExpr <?> "camera target Y"
+        _ <- symbol "," <?> "comma"
+        z <- pExpr <?> "camera target Z"
+        return (x, y, z)
+    _ <- symbol ")" <?> "closing ')' for camera"
+    return (CameraKey t yaw pitch dist tx ty tz)
+
 pStatement :: Parser Statement
-pStatement = pAssign <|> pAssignShape <|> pDraw <?> "statement (e.g., shape = cube(...) or cube(...))"
+pStatement = pLight <|> pCameraKey <|> pAssign <|> pAssignShape <|> pDraw <?> "statement (e.g., shape = cube(...) or cube(...))"
 
 -------------------------------------------------
 -- 4. SCRIPT PARSER 

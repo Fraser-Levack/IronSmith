@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 winit = "0.29.15"
 
-wgpu = { version = "0.19.4", features = ["glsl"] } 
+wgpu = { version = "0.19.4", features = ["glsl", "naga-ir"] }
 
 bytemuck = { version = "1.15", features = ["derive"] }
 
@@ -19,6 +19,8 @@ naga = "0.19"
 env_logger = "0.11"
 
 dirs = "5.0.1"
+
+gif = "0.13"
 
 [profile.release]
 opt-level = "z"

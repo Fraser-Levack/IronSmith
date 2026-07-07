@@ -22,6 +22,9 @@ data IronConfig = IronConfig
     , cfgEditorLineWrap     :: Bool
     , cfgKeybindings        :: [(String, String)] -- command id -> key combo, e.g. "save" -> "ctrl+s"
     , cfgExportResolution   :: Int -- grid cells per axis for .obj export
+    , cfgFilter             :: String -- post-process filter name ("none" = off)
+    , cfgExposure           :: Float -- viewport brightness multiplier (1.0 = neutral)
+    , cfgVideoFps           :: Int -- frames per second for animation video export
     } deriving (Show)
 
 -- | Rebindable commands and their default key combos.
@@ -37,6 +40,9 @@ defaultKeybindings =
     , ("cycle_view_mode",  "ctrl+e")
     , ("reset_camera",     "ctrl+r")
     , ("export_obj",       "ctrl+shift+e")
+    , ("cycle_filter",     "ctrl+f")
+    , ("toggle_animation", "ctrl+a")
+    , ("export_video",     "ctrl+shift+v")
     ]
 
 -- | Sensible defaults matching the current hardcoded values
@@ -55,6 +61,9 @@ defaultConfig = IronConfig
     , cfgEditorLineWrap     = False
     , cfgKeybindings        = defaultKeybindings
     , cfgExportResolution   = 128
+    , cfgFilter             = "none"
+    , cfgExposure           = 1.0
+    , cfgVideoFps           = 30
     }
 
 -- | The default config file content (written on first run)
@@ -89,6 +98,19 @@ defaultConfigText = unlines $
     , "# Recommended range: 64 - 256"
     , "march_steps = 150"
     , ""
+    , "# Post-process filter applied to the viewport."
+    , "# Filters are .glsl files in the \"filters\" folder next to this file;"
+    , "# use the file name without extension, or \"none\" to disable."
+    , "# Built-in examples: edge_detection, heatmap, ascii, passthrough."
+    , "# Copy one of those files to create your own!"
+    , "filter = none"
+    , ""
+    , "# Viewport exposure (brightness multiplier). 1.0 is neutral;"
+    , "# raise it to brighten dim scenes (e.g. with a low-intensity"
+    , "# light(...) in your script), lower it to darken."
+    , "# Recommended range: 0.2 - 4.0"
+    , "exposure = 1.0"
+    , ""
     , "[editor]"
     , ""
     , "# Delay in milliseconds after you stop typing before the scene recompiles"
@@ -116,6 +138,10 @@ defaultConfigText = unlines $
     , "# and produce larger files."
     , "# Recommended range: 64 (fast preview) - 256 (high detail, slow)"
     , "export_resolution = 128"
+    , ""
+    , "# Frames per second when exporting an animation to video."
+    , "# Higher is smoother but exports take proportionally longer."
+    , "video_fps = 30"
     , ""
     , "[keybindings]"
     , ""
@@ -182,6 +208,12 @@ parseConfig raw =
                                    | (cmdId, defaultCombo) <- defaultKeybindings ]
         , cfgExportResolution   = fromMaybe (cfgExportResolution defaultConfig)
                                     (lookup "export_resolution" pairs >>= readMaybeInt)
+        , cfgFilter             = fromMaybe (cfgFilter defaultConfig)
+                                    (lookup "filter" pairs)
+        , cfgExposure           = fromMaybe (cfgExposure defaultConfig)
+                                    (lookup "exposure" pairs >>= readMaybeFloat)
+        , cfgVideoFps           = fromMaybe (cfgVideoFps defaultConfig)
+                                    (lookup "video_fps" pairs >>= readMaybeInt)
         }
 
 -- | Parse a single line into a (key, value) pair.
