@@ -83,6 +83,9 @@ main = do
             , _exportProgress = Nothing
             , _currentFilter = cfgFilter cfg
             , _animPlaying  = False
+            , _undoStack    = []
+            , _redoStack    = []
+            , _pendingUndoSnapshot = True
             }
             
     -- NEW: Boot up customMain instead of defaultMain

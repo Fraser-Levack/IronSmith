@@ -43,6 +43,9 @@ data AppState = AppState
     , _exportProgress :: Maybe Float
     , _currentFilter :: String -- active post-process filter name ("none" = off)
     , _animPlaying  :: Bool -- viewer is looping the camera animation
+    , _undoStack    :: [String] -- snapshots of the editor's full text, most recent first (undo/redo, Editing mode only)
+    , _redoStack    :: [String] -- snapshots popped off the undo stack, replayed by redo
+    , _pendingUndoSnapshot :: Bool -- True when the *next* edit should start a fresh undo boundary
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)
@@ -64,7 +67,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -79,6 +82,8 @@ commandConfigKey CmdExportOBJ      = "export_obj"
 commandConfigKey CmdCycleFilter    = "cycle_filter"
 commandConfigKey CmdToggleAnimation = "toggle_animation"
 commandConfigKey CmdExportVideo    = "export_video"
+commandConfigKey CmdUndo           = "undo"
+commandConfigKey CmdRedo           = "redo"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -92,6 +97,8 @@ commandLabel CmdExportOBJ        = "Export to .OBJ"
 commandLabel CmdCycleFilter      = "Cycle Filter"
 commandLabel CmdToggleAnimation  = "Play/Stop Animation"
 commandLabel CmdExportVideo      = "Export Animation Video"
+commandLabel CmdUndo             = "Undo"
+commandLabel CmdRedo             = "Redo"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String
