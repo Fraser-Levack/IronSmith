@@ -47,6 +47,9 @@ openFile st path = do
             , _status = Normal
             , _recentFiles = newRecents
             , _isDirty = False
+            , _undoStack = []
+            , _redoStack = []
+            , _pendingUndoSnapshot = True
             })
 
 -- | GLOBAL ROUTER
@@ -62,7 +65,9 @@ handleEvent _ (AppEvent (CompileTimerFired version)) = do
         let newStatus = case newErr of
                 Nothing -> Normal
                 Just (e, lineNum) -> ErrorMsg e lineNum
-        put (st { _status = newStatus })
+        -- The 500ms quiet period has elapsed with no further typing, so the
+        -- *next* edit starts a brand-new undo boundary (see handleEditorInput).
+        put (st { _status = newStatus, _pendingUndoSnapshot = True })
 
 -- Progress updates from a background export
 handleEvent _ (AppEvent (ExportProgress p)) = do
@@ -94,7 +99,8 @@ handleSplash :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name 
 handleSplash _ (VtyEvent (V.EvKey V.KEsc []))   = halt
 handleSplash _ (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
-    put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal, _isDirty = False })
+    put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal, _isDirty = False
+            , _undoStack = [], _redoStack = [], _pendingUndoSnapshot = True })
 handleSplash _ (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
@@ -333,6 +339,51 @@ runCommand _ CmdExportVideo = do
                         liftIO $ sendCommand ("CMD:EXPORT_VIDEO:" ++ show fps ++ ":" ++ dropExtension path)
                         put (st { _status = Info "Video export started - see the viewer window for progress" })
 
+-- Undo: pop the most recent snapshot, push the current text onto the redo
+-- stack, and restore it as the editor content. No-op (safe) on an empty
+-- undo stack. Cursor is not restored (Brick's Editor doesn't expose a
+-- simple public setter for it); it lands wherever `E.editor` puts it by
+-- default. Treated like any other edit for recompilation purposes, and the
+-- restored text becomes its own fresh undo boundary for subsequent typing.
+runCommand chan CmdUndo = do
+    st <- get
+    case _undoStack st of
+        [] -> return () -- nothing to undo
+        (prev:rest) -> do
+            let current = unlines $ E.getEditContents (_editor st)
+                nextVersion = _editVersion st + 1
+            put (st { _editor = E.editor CodeEditor Nothing prev
+                    , _undoStack = rest
+                    , _redoStack = current : _redoStack st
+                    , _pendingUndoSnapshot = True
+                    , _isDirty = True
+                    , _editVersion = nextVersion
+                    })
+            liftIO $ forkIO $ do
+                threadDelay 500000
+                writeBChan chan (CompileTimerFired nextVersion)
+            return ()
+
+-- Redo: the mirror image of undo. No-op on an empty redo stack.
+runCommand chan CmdRedo = do
+    st <- get
+    case _redoStack st of
+        [] -> return () -- nothing to redo
+        (next:rest) -> do
+            let current = unlines $ E.getEditContents (_editor st)
+                nextVersion = _editVersion st + 1
+            put (st { _editor = E.editor CodeEditor Nothing next
+                    , _redoStack = rest
+                    , _undoStack = current : _undoStack st
+                    , _pendingUndoSnapshot = True
+                    , _isDirty = True
+                    , _editVersion = nextVersion
+                    })
+            liftIO $ forkIO $ do
+                threadDelay 500000
+                writeBChan chan (CompileTimerFired nextVersion)
+            return ()
+
 runCommand _ CmdSave = do
     st <- get
     case _currentFile st of
@@ -344,27 +395,47 @@ runCommand _ CmdSave = do
             put (st { _mode = SaveDialog })
 
 -- | HELPER: Runs standard editor inputs and triggers compilation
+--
+-- Undo/redo snapshot heuristic: pushing a full-buffer snapshot on every
+-- keystroke would make undo annoyingly fine-grained (undoing one character
+-- at a time). Instead we coalesce edits into the same 500ms "debounce
+-- window" already used for auto-compile: a snapshot of the *pre-edit* text
+-- is only pushed when `_pendingUndoSnapshot` is True, which happens (a) on
+-- the very first edit after loading/opening a file, and (b) whenever the
+-- debounce timer actually fires (see CompileTimerFired above), meaning the
+-- user paused for >=500ms. Any burst of typing/deleting within one window
+-- collapses to a single undo step; pausing (or the compile firing) starts a
+-- fresh boundary for the next burst. A new edit after an undo always clears
+-- the redo stack (standard undo/redo semantics).
 handleEditorInput :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
 handleEditorInput chan ev = do
-    st <- get 
+    st <- get
     let oldText = E.getEditContents (_editor st)
-    
+
     zoom editorLens $ E.handleEditorEvent ev
-    
-    st' <- get 
+
+    st' <- get
     let newText = E.getEditContents (_editor st')
-    
+
     if oldText /= newText
         then do
             -- Increment the version, set dirty flag, and fork the timer thread
             let nextVersion = _editVersion st' + 1
-            put (st' { _isDirty = True, _editVersion = nextVersion })
-            
+                newUndoStack
+                    | _pendingUndoSnapshot st' = unlines oldText : _undoStack st'
+                    | otherwise                 = _undoStack st'
+            put (st' { _isDirty = True
+                     , _editVersion = nextVersion
+                     , _undoStack = newUndoStack
+                     , _redoStack = []
+                     , _pendingUndoSnapshot = False
+                     })
+
             liftIO $ forkIO $ do
                 threadDelay 500000 -- Sleep for 500ms
                 writeBChan chan (CompileTimerFired nextVersion)
             return ()
-        else 
+        else
             put st'
 
 

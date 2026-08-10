@@ -43,6 +43,8 @@ defaultKeybindings =
     , ("cycle_filter",     "ctrl+f")
     , ("toggle_animation", "ctrl+a")
     , ("export_video",     "ctrl+shift+v")
+    , ("undo",             "ctrl+z")
+    , ("redo",             "ctrl+y")
     ]
 
 -- | Sensible defaults matching the current hardcoded values
