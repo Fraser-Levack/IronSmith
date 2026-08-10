@@ -17,6 +17,12 @@ spec = do
         it "evaluates multiplication" $
             evalExpr Map.empty (Mul (Lit 2) (Lit 3)) `shouldBe` 6
 
+        it "evaluates subtraction" $
+            evalExpr Map.empty (Sub (Lit 5) (Lit 3)) `shouldBe` 2
+
+        it "evaluates division" $
+            evalExpr Map.empty (Div (Lit 6) (Lit 3)) `shouldBe` 2
+
         it "looks up variables from the environment" $
             evalExpr (Map.singleton "x" (VNum 10)) (Var "x") `shouldBe` 10
 
@@ -190,4 +196,15 @@ spec = do
 
         it "checks light arguments" $
             validateScript [Light (Var "nope") (Lit 0) (Lit 0) (Lit 1)]
+                `shouldBe` Left ("nope", "Unknown variable 'nope'")
+
+        it "accepts subtraction and division expressions" $
+            validateScript
+                [ Assign "size" (Sub (Lit 10) (Div (Lit 4) (Lit 2)))
+                , Draw (Sphere (Var "size"))
+                ]
+                `shouldBe` Right ()
+
+        it "rejects an undefined variable inside a subtraction expression" $
+            validateScript [Assign "x" (Sub (Lit 1) (Var "nope"))]
                 `shouldBe` Left ("nope", "Unknown variable 'nope'")

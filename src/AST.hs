@@ -6,6 +6,8 @@ data Expr
     | Var String         -- A variable, e.g., "x"
     | Add Expr Expr      -- Addition, e.g., x + 2
     | Mul Expr Expr      -- Multiplication, e.g., y * 2
+    | Sub Expr Expr      -- Subtraction, e.g., x - 2
+    | Div Expr Expr      -- Division, e.g., y / 2
     deriving (Show, Eq)
 
 -- 2. Shapes now accept Expressions instead of raw Floats

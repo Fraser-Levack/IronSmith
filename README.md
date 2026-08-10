@@ -67,6 +67,11 @@ IronSmith supports basic primitives, transformations, and CSG (Constructive Soli
 // Variables
 size = 5
 
+// Numeric expressions support +, -, *, and / with standard precedence
+// (* and / bind tighter than + and -, all left-associative)
+gap = size * 2 + 1
+half = size / 2 - 1
+
 // Primitives
 cube(10, 10, 10)
 sphere(size, 16)

@@ -20,6 +20,8 @@ evalExpr env (Var name)  =
         _               -> 0.0 
 evalExpr env (Add e1 e2) = evalExpr env e1 + evalExpr env e2
 evalExpr env (Mul e1 e2) = evalExpr env e1 * evalExpr env e2
+evalExpr env (Sub e1 e2) = evalExpr env e1 - evalExpr env e2
+evalExpr env (Div e1 e2) = evalExpr env e1 / evalExpr env e2
 
 -- Map material names to the IDs the Rust shader expects
 resolveMaterial :: String -> Float
@@ -87,6 +89,8 @@ validateScript = go [] []
             | otherwise       -> Left (n, "Unknown variable '" ++ n ++ "'")
         Add a b -> checkExpr nums shapes a >> checkExpr nums shapes b
         Mul a b -> checkExpr nums shapes a >> checkExpr nums shapes b
+        Sub a b -> checkExpr nums shapes a >> checkExpr nums shapes b
+        Div a b -> checkExpr nums shapes a >> checkExpr nums shapes b
 
     checkShape :: [String] -> [String] -> Shape -> Either (String, String) ()
     checkShape nums shapes shape = case shape of

@@ -29,6 +29,25 @@ spec = do
         it "parses negative numbers" $
             parseOk pExpr "-5" `shouldBe` Just (Lit (-5))
 
+        it "parses subtraction" $
+            parseOk pExpr "5 - 3" `shouldBe` Just (Sub (Lit 5) (Lit 3))
+
+        it "parses division" $
+            parseOk pExpr "6 / 3" `shouldBe` Just (Div (Lit 6) (Lit 3))
+
+        it "respects division precedence over subtraction" $
+            parseOk pExpr "10 - 2 * 3" `shouldBe` Just (Sub (Lit 10) (Mul (Lit 2) (Lit 3)))
+
+        it "left-associates subtraction" $
+            parseOk pExpr "10 - 2 - 3" `shouldBe` Just (Sub (Sub (Lit 10) (Lit 2)) (Lit 3))
+
+        it "left-associates division" $
+            parseOk pExpr "12 / 2 / 3" `shouldBe` Just (Div (Div (Lit 12) (Lit 2)) (Lit 3))
+
+        it "combines all four operators with correct precedence" $
+            parseOk pExpr "2 + 3 * 4 - 6 / 2"
+                `shouldBe` Just (Sub (Add (Lit 2) (Mul (Lit 3) (Lit 4))) (Div (Lit 6) (Lit 2)))
+
     describe "pCameraKey" $ do
         it "parses a 4-argument camera keyframe (target defaults to origin)" $
             parseOk pStatement "camera(0, 90, 20, 15)"

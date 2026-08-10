@@ -43,8 +43,8 @@ pTerm = choice
 
 operatorTable :: [[Operator Parser Expr]]
 operatorTable =
-  [ [ InfixL (Mul <$ symbol "*") ] 
-  , [ InfixL (Add <$ symbol "+") ] 
+  [ [ InfixL (Mul <$ symbol "*"), InfixL (Div <$ symbol "/") ]
+  , [ InfixL (Add <$ symbol "+"), InfixL (Sub <$ symbol "-") ]
   ]
 
 pExpr :: Parser Expr
