@@ -58,7 +58,7 @@ defaultConfig = IronConfig
     , cfgAutoOrbit          = True
     , cfgShadowEnabled      = True
     , cfgMarchSteps         = 150
-    , cfgAutoCompileDelayMs = 500
+    , cfgAutoCompileDelayMs = 150
     , cfgDefaultMaterial    = "matte"
     , cfgLaunchViewerOnStart = True
     , cfgRestoreLastFile    = False
@@ -118,8 +118,10 @@ defaultConfigText = unlines $
     , ""
     , "[editor]"
     , ""
-    , "# Delay in milliseconds after you stop typing before the scene recompiles"
-    , "auto_compile_delay_ms = 500"
+    , "# Delay in milliseconds after you stop typing before the scene updates."
+    , "# Changing only numbers (sizes, positions, colours) shows instantly, so"
+    , "# this can be short; adding/removing shapes still compiles a shader."
+    , "auto_compile_delay_ms = 150"
     , ""
     , "# Default material for new shapes (matte / plastic / neon / metal)"
     , "default_material = matte"

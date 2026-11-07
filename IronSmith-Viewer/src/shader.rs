@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc; // Needed for Arc<wgpu::Device>
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 /// Append a line to the forge log; shared by the async compile threads,
 /// which have no other way to surface errors.
@@ -28,6 +29,16 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 u_bg_color;
     vec4 u_exposure;
 };
+
+// Every number in the scene (sizes, offsets, angles, colours, materials,
+// light) lives here instead of being baked into the GLSL, so the shader
+// source depends only on the scene's *structure*. Editing a number is a
+// buffer write; only adding/removing operations needs a new pipeline.
+// Layout: see `SceneProgram` in shader.rs.
+// Fixed-size (not runtime-sized) so every constant-index read is provably in
+// bounds: naga then emits no per-read bounds check, which otherwise made the
+// driver compile of big scenes several times slower.
+layout(set = 0, binding = 1, std430) readonly buffer SceneParams { float prm[{PARAM_COUNT}]; };
 
 layout(location = 0) out vec4 out_color;
 
@@ -61,34 +72,24 @@ Hit map(vec3 p) {
     {GENERATED_BODY}
 }
 
-vec3 calcNormal(vec3 p) {
-    // Tetrahedral normal sampled in a loop whose start the compiler can't
-    // prove is 0, so it can't unroll the loop and inline the (potentially
-    // huge) generated map() four times. Unrolled, a 250-draw scene took
-    // the AMD Vulkan driver >2 minutes to compile; looped, ~2.6s.
-    int ZERO = min(int(u_time), 0);
-    vec3 n = vec3(0.0);
-    for (int i = ZERO; i < 4; i++) {
-        vec3 e = 0.5773 * (2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0);
-        n += e * map(p + 0.0005 * e).d;
-    }
-    return normalize(n);
+// Tetrahedral normal-sampling direction for tap i (0..3).
+vec3 tapDir(int i) {
+    return 0.5773 * (2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0);
 }
 
-float calcShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
-    float res = 1.0;
-    float t = mint;
-    
-    for(int i = 0; i < 30; i++) {
-        float h = map(ro + rd * t).d;
-        if(h < 0.001) return 0.1; 
-        res = min(res, k * h / t);
-        t += h;
-        if(t > maxt) break;
-    }
-    return clamp(res, 0.1, 1.0);
-}
+// Phases of the single raymarching loop in main().
+const int PH_PRIMARY = 0;    // march the camera ray
+const int PH_NORMAL = 1;     // 4 taps around the hit point
+const int PH_SHADOW = 2;     // soft-shadow march toward the light
+const int PH_REFLECT = 3;    // metal: march the reflected ray
+const int PH_REF_NORMAL = 4; // metal: 4 taps around the reflected hit
+const int PH_DONE = 5;
 
+// Why one loop: GPU drivers inline map() (the whole generated scene) at
+// every call site. Separate march / calcNormal / shadow / reflection code
+// called it from 5 places, so the driver compiled the scene 5 times over.
+// Here map() is called exactly once, and each iteration feeds its result to
+// whichever phase is active. Same steps, thresholds and maths as before.
 void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution.xy;
     vec2 st = (2.0 * uv - 1.0) * vec2(u_resolution.x / u_resolution.y, -1.0);
@@ -98,78 +99,168 @@ void main() {
     vec3 vv = normalize(cross(uu, ww));
     vec3 rd = normalize(st.x * uu + st.y * vv + 1.5 * ww);
 
-    float t = 0.0; vec3 material_col = vec3(0.0); int material_id = 0; bool hit = false; 
+    // light(...) from the script (prm[0] = 1), else a camera-relative default.
+    vec3 light_dir = normalize(-ww + uu * 0.4 + vv * 0.6); float light_intensity = 1.0;
+    if (prm[0] > 0.5) { light_dir = normalize(vec3(prm[1], prm[2], prm[3])); light_intensity = prm[4]; }
 
-    float scene_radius = max(35.0, u_camera_dist * 1.5); 
-    vec3 oc = ro - vec3(0.0);
-    float b = dot(oc, rd);
-    float h = b * b - (dot(oc, oc) - scene_radius * scene_radius);
+    // Only march inside a bounding sphere around the origin.
+    float scene_radius = max(35.0, u_camera_dist * 1.5);
+    float b = dot(ro, rd);
+    float h = b * b - (dot(ro, ro) - scene_radius * scene_radius);
+    float t = 0.0; float t_out = 0.0;
+    int phase = PH_DONE;
+    if (h >= 0.0) { t_out = -b + sqrt(h); t = max(0.0, -b - sqrt(h)); phase = PH_PRIMARY; }
 
-    if (h >= 0.0) {
-        float t_out = -b + sqrt(h); 
-        t = max(0.0, -b - sqrt(h));
+    int max_steps = int(u_march_steps);
+    bool shadows_on = u_shadow_enabled > 0.5;
 
-        int _max_steps = int(u_march_steps);
-        for(int i = 0; i < _max_steps; i++) {
-            if(t > t_out) break; 
-            vec3 p = ro + rd * t; Hit res = map(p);
-            if(res.d < max(0.001, 0.0002 * t)) { material_col = res.col; material_id = res.mat; hit = true; break; }
-            t += res.d; 
+    bool hit = false; vec3 material_col = vec3(0.0); int material_id = 0;
+    vec3 pos = vec3(0.0); vec3 normal = vec3(0.0, 1.0, 0.0);
+    float shadow = 1.0; float s_t = 0.0; float s_res = 1.0;
+    vec3 ref_ro = vec3(0.0); vec3 ref_rd = vec3(0.0); float ref_t = 0.0;
+    bool ref_hit = false; vec3 ref_col = vec3(0.0); vec3 ref_pos = vec3(0.0); vec3 ref_normal = vec3(0.0, 1.0, 0.0);
+    vec3 n_acc = vec3(0.0); int tap = 0; int steps = 0;
+    vec3 sample_p = ro + rd * t;
+
+    // Upper bound on samples across all phases; the loop always ends via
+    // PH_DONE first. Runtime-sized, so the driver can't unroll it.
+    int budget = max_steps + 4 + 30 + 30 + 4;
+    for (int it = 0; it < budget; it++) {
+        if (phase == PH_DONE) break;
+        Hit res = map(sample_p);
+
+        if (phase == PH_PRIMARY) {
+            if (res.d < max(0.001, 0.0002 * t)) {
+                hit = true; material_col = res.col; material_id = res.mat;
+                pos = ro + rd * t;
+                phase = PH_NORMAL; tap = 0; n_acc = vec3(0.0);
+                sample_p = pos + 0.0005 * tapDir(0);
+            } else {
+                t += res.d; steps++;
+                if (t > t_out || steps >= max_steps) phase = PH_DONE;
+                sample_p = ro + rd * t;
+            }
+        } else if (phase == PH_NORMAL) {
+            n_acc += tapDir(tap) * res.d; tap++;
+            if (tap < 4) {
+                sample_p = pos + 0.0005 * tapDir(tap);
+            } else {
+                normal = normalize(n_acc);
+                if (shadows_on) {
+                    phase = PH_SHADOW; s_t = 0.05; s_res = 1.0; steps = 0;
+                    sample_p = pos + light_dir * s_t;
+                } else if (material_id == 3) {
+                    phase = PH_REFLECT; ref_rd = reflect(rd, normal); ref_ro = pos + normal * 0.01; ref_t = 0.0; steps = 0;
+                    sample_p = ref_ro;
+                } else {
+                    phase = PH_DONE;
+                }
+            }
+        } else if (phase == PH_SHADOW) {
+            bool shadow_done = false;
+            if (res.d < 0.001) {
+                shadow = 0.1; shadow_done = true;
+            } else {
+                s_res = min(s_res, 12.0 * res.d / s_t);
+                s_t += res.d; steps++;
+                if (s_t > 20.0 || steps >= 30) { shadow = clamp(s_res, 0.1, 1.0); shadow_done = true; }
+            }
+            if (!shadow_done) {
+                sample_p = pos + light_dir * s_t;
+            } else if (material_id == 3) {
+                phase = PH_REFLECT; ref_rd = reflect(rd, normal); ref_ro = pos + normal * 0.01; ref_t = 0.0; steps = 0;
+                sample_p = ref_ro;
+            } else {
+                phase = PH_DONE;
+            }
+        } else if (phase == PH_REFLECT) {
+            if (res.d < max(0.005, 0.001 * ref_t)) {
+                ref_hit = true; ref_col = res.col; ref_pos = ref_ro + ref_rd * ref_t;
+                phase = PH_REF_NORMAL; tap = 0; n_acc = vec3(0.0);
+                sample_p = ref_pos + 0.0005 * tapDir(0);
+            } else if (ref_t > 20.0) {
+                phase = PH_DONE;
+            } else {
+                ref_t += res.d; steps++;
+                if (steps >= 30) phase = PH_DONE;
+                sample_p = ref_ro + ref_rd * ref_t;
+            }
+        } else if (phase == PH_REF_NORMAL) {
+            n_acc += tapDir(tap) * res.d; tap++;
+            if (tap < 4) {
+                sample_p = ref_pos + 0.0005 * tapDir(tap);
+            } else {
+                ref_normal = normalize(n_acc); phase = PH_DONE;
+            }
         }
     }
 
     vec3 bg_color = u_bg_color.rgb; vec3 col = bg_color;
-    {LIGHT_SETUP}
 
-    if(hit) {
-        vec3 pos = ro + rd * t; vec3 normal = calcNormal(pos); vec3 view_dir = normalize(ro - pos);
+    if (hit) {
+        vec3 view_dir = normalize(ro - pos);
+        float lit = shadow * light_intensity;
 
-        float shadow = (u_shadow_enabled > 0.5 ? calcShadow(pos, light_dir, 0.05, 20.0, 12.0) : 1.0) * light_intensity;
-
-        if (material_id == 0) { 
-            col = material_col * max(dot(normal, light_dir), 0.0) * shadow + material_col * 0.1; 
-        } 
-        else if (material_id == 1) { 
-            vec3 half_dir = normalize(light_dir + view_dir); 
-            float diff = max(dot(normal, light_dir), 0.0) * shadow;
-            float spec = pow(max(dot(normal, half_dir), 0.0), 64.0) * shadow;
-            col = (material_col * diff) + (material_col * 0.1) + vec3(1.0) * spec; 
-        } 
-        else if (material_id == 2) { 
-            col = material_col * 1.8; 
+        if (material_id == 0) {
+            col = material_col * max(dot(normal, light_dir), 0.0) * lit + material_col * 0.1;
+        }
+        else if (material_id == 1) {
+            vec3 half_dir = normalize(light_dir + view_dir);
+            float diff = max(dot(normal, light_dir), 0.0) * lit;
+            float spec = pow(max(dot(normal, half_dir), 0.0), 64.0) * lit;
+            col = (material_col * diff) + (material_col * 0.1) + vec3(1.0) * spec;
+        }
+        else if (material_id == 2) {
+            col = material_col * 1.8;
         }
         else if (material_id == 3) {
-            vec3 ref_rd = reflect(rd, normal); vec3 ref_ro = pos + normal * 0.01; 
-            float ref_t = 0.0; bool ref_hit = false; vec3 ref_col = vec3(0.0);
-            for(int i = 0; i < 30; i++) { 
-                Hit ref_res = map(ref_ro + ref_rd * ref_t);
-                if(ref_res.d < max(0.005, 0.001 * ref_t)) { ref_col = ref_res.col; ref_hit = true; break; }
-                if(ref_t > 20.0) break; ref_t += ref_res.d;
-            }
-            vec3 shaded_ref = ref_hit ? (ref_col * max(dot(calcNormal(ref_ro + ref_rd * ref_t), light_dir), 0.0) + ref_col * 0.1) : (bg_color + max(ref_rd.y, 0.0) * 0.3);
-            
-            float spec = pow(max(dot(normal, normalize(light_dir + view_dir)), 0.0), 128.0) * shadow;
-            col = mix(material_col * 0.2 * shadow, shaded_ref, 0.8) + vec3(1.0) * spec;
+            vec3 shaded_ref = ref_hit ? (ref_col * max(dot(ref_normal, light_dir), 0.0) + ref_col * 0.1) : (bg_color + max(ref_rd.y, 0.0) * 0.3);
+            float spec = pow(max(dot(normal, normalize(light_dir + view_dir)), 0.0), 128.0) * lit;
+            col = mix(material_col * 0.2 * lit, shaded_ref, 0.8) + vec3(1.0) * spec;
         }
     }
     out_color = vec4(pow(col * u_exposure.x, vec3(0.4545)), 1.0);
 }
 "#;
 
-/// The camera-relative light used when the script has no light() statement.
-const DEFAULT_LIGHT_SETUP: &str =
-    "vec3 light_dir = normalize(-ww + uu * 0.4 + vv * 0.6); float light_intensity = 1.0;";
+/// Number of leading `prm[]` slots reserved for scene-wide values, before
+/// the per-instruction parameters:
+///   prm[0] = 1.0 if the script has a light(...) statement, else 0.0
+///   prm[1..4] = light direction, prm[4] = light intensity
+///   prm[5..8] = reserved (keeps geometry params 16-byte aligned)
+pub const HEADER_PARAMS: usize = 8;
 
-/// Walk the bytecode looking for lighting opcodes (40 = light direction,
-/// 41 = light intensity) and produce the GLSL that sets up `light_dir` and
-/// `light_intensity` in main(). Uses the same instruction strides as
-/// `generate_shader_body` so argument floats are never misread as opcodes.
-pub fn extract_light_setup(bytecode: &[f32]) -> String {
+/// A scene compiled for the GPU: GLSL that depends only on the scene's
+/// structure, plus the numbers it reads from the `prm[]` storage buffer.
+///
+/// Two scenes that differ only in numbers (sizes, positions, angles,
+/// colours, materials, light) produce the same `body`, so `body` is the
+/// pipeline cache key and such edits never recompile anything.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneProgram {
+    pub body: String,
+    pub params: Vec<f32>,
+}
+
+/// Walk the bytecode for lighting opcodes (40 = light direction, 41 = light
+/// intensity) and fill the header slots described at `HEADER_PARAMS`. Uses
+/// the same instruction strides as `generate_program`, so argument floats
+/// are never misread as opcodes. A zero direction is ignored (it would
+/// normalize to NaN), falling back to the default light.
+pub fn extract_light(bytecode: &[f32]) -> [f32; HEADER_PARAMS] {
     let mut dir: Option<[f32; 3]> = None;
     let mut intensity: Option<f32> = None;
     let mut pc = 0;
 
     while pc < bytecode.len() {
+        let width = if matches!(bytecode[pc] as i32, 2 | 4 | 23) {
+            8
+        } else {
+            4
+        };
+        if pc + width > bytecode.len() {
+            break; // truncated; generate_program reports it
+        }
         match bytecode[pc] as i32 {
             0 => break,
             40 => {
@@ -177,38 +268,50 @@ pub fn extract_light_setup(bytecode: &[f32]) -> String {
                 if d.iter().any(|v| *v != 0.0) {
                     dir = Some(d);
                 }
-                pc += 4;
             }
-            41 => {
-                intensity = Some(bytecode[pc + 1].max(0.0));
-                pc += 4;
-            }
-            2 | 4 | 23 => pc += 8, // two-vec4 instructions (BOX, CONE, SCALE)
-            _ => pc += 4,
+            41 => intensity = Some(bytecode[pc + 1].max(0.0)),
+            _ => {}
         }
+        pc += width;
     }
 
-    match dir {
-        None => DEFAULT_LIGHT_SETUP.to_string(),
-        Some([x, y, z]) => format!(
-            "vec3 light_dir = normalize(vec3({:.5}, {:.5}, {:.5})); float light_intensity = {:.5};",
-            x,
-            y,
-            z,
-            intensity.unwrap_or(1.0)
-        ),
+    let mut header = [0.0; HEADER_PARAMS];
+    if let Some([x, y, z]) = dir {
+        header[..5].copy_from_slice(&[1.0, x, y, z, intensity.unwrap_or(1.0)]);
+    }
+    header
+}
+
+/// Appends parameter values and hands back the GLSL that reads them.
+struct Params(Vec<f32>);
+
+impl Params {
+    /// Store `v` and return `prm[k]`.
+    fn f(&mut self, v: f32) -> String {
+        self.0.push(v);
+        format!("prm[{}]", self.0.len() - 1)
+    }
+    /// Store three values and return a `vec3(...)` reading them.
+    fn v3(&mut self, x: f32, y: f32, z: f32) -> String {
+        format!("vec3({}, {}, {})", self.f(x), self.f(y), self.f(z))
+    }
+    /// A material id: stored as a float, read back as an int.
+    fn mat(&mut self, v: f32) -> String {
+        format!("int({})", self.f(v))
     }
 }
 
 /// Translates the bytecode emitted by the Haskell compiler into the body of
-/// the GLSL `map()` function, walking the same opcode stack machine that the
-/// CPU-side OBJ exporter and the GPU raymarcher both implement.
+/// the GLSL `map()` function plus its parameter buffer, walking the same
+/// opcode stack machine that the CPU-side OBJ exporter and the GPU
+/// raymarcher both implement.
 ///
 /// Returns Err for malformed bytecode (e.g. a CSG op with fewer than two
 /// shapes on the stack, which happens mid-edit when a script references a
 /// shape that doesn't exist yet). The caller keeps the last working shader.
-pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
+pub fn generate_program(bytecode: &[f32]) -> Result<SceneProgram, String> {
     let mut body = String::new();
+    let mut prm = Params(extract_light(bytecode).to_vec());
     let mut pc = 0;
 
     let mut sp: i32 = 0;
@@ -239,43 +342,54 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
         if iop != 0 && pc + width > bytecode.len() {
             return Err(format!("truncated instruction {} at offset {}", iop, pc));
         }
+        let a = |i: usize| bytecode[pc + i];
 
         match iop {
             0 => break, // OP_HALT
             1 => {
-                // SPHERE
+                // SPHERE(radius, material)
+                let (r, m) = (prm.f(a(1)), prm.mat(a(2)));
                 body.push_str(&format!(
-                    "s{} = Hit(sdSphere(current_p, {:.5}) * current_scale, current_col, {});\n",
-                    sp,
-                    bytecode[pc + 1],
-                    bytecode[pc + 2] as i32
+                    "s{} = Hit(sdSphere(current_p, {}) * current_scale, current_col, {});\n",
+                    sp, r, m
                 ));
                 sp += 1;
-                pc += 4;
             }
             2 => {
-                // BOX
-                body.push_str(&format!("s{} = Hit(sdBox(current_p, vec3({:.5}, {:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3], bytecode[pc+4] as i32));
+                // BOX(half extents, material)
+                let (b, m) = (prm.v3(a(1), a(2), a(3)), prm.mat(a(4)));
+                body.push_str(&format!(
+                    "s{} = Hit(sdBox(current_p, {}) * current_scale, current_col, {});\n",
+                    sp, b, m
+                ));
                 sp += 1;
-                pc += 8;
             }
             3 => {
-                // CYLINDER
-                body.push_str(&format!("s{} = Hit(sdCylinder(current_p, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+2], bytecode[pc+1], bytecode[pc+3] as i32));
+                // CYLINDER(radius, half height, material)
+                let (h, r, m) = (prm.f(a(2)), prm.f(a(1)), prm.mat(a(3)));
+                body.push_str(&format!(
+                    "s{} = Hit(sdCylinder(current_p, {}, {}) * current_scale, current_col, {});\n",
+                    sp, h, r, m
+                ));
                 sp += 1;
-                pc += 4;
             }
             4 => {
-                // CONE
-                body.push_str(&format!("s{} = Hit(sdCappedCone(current_p, {:.5}, {:.5}, {:.5}) * current_scale, current_col, {});\n", sp, bytecode[pc+3], bytecode[pc+1], bytecode[pc+2], bytecode[pc+4] as i32));
+                // CONE(r1, r2, half height, material)
+                let (h, r1, r2, m) = (prm.f(a(3)), prm.f(a(1)), prm.f(a(2)), prm.mat(a(4)));
+                body.push_str(&format!(
+                    "s{} = Hit(sdCappedCone(current_p, {}, {}, {}) * current_scale, current_col, {});\n",
+                    sp, h, r1, r2, m
+                ));
                 sp += 1;
-                pc += 8;
             }
             5 => {
-                // TORUS
-                body.push_str(&format!("s{} = Hit(sdTorus(current_p, vec2({:.5}, {:.5})) * current_scale, current_col, {});\n", sp, bytecode[pc+1], bytecode[pc+2], bytecode[pc+3] as i32));
+                // TORUS(major, minor, material)
+                let (t1, t2, m) = (prm.f(a(1)), prm.f(a(2)), prm.mat(a(3)));
+                body.push_str(&format!(
+                    "s{} = Hit(sdTorus(current_p, vec2({}, {})) * current_scale, current_col, {});\n",
+                    sp, t1, t2, m
+                ));
                 sp += 1;
-                pc += 4;
             }
             10..=12 => {
                 // UNION / DIFF / INTERSECT
@@ -296,53 +410,31 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
                 let a = sp;
                 body.push_str(&format!("s{} = {}(s{}, s{});\n", a, op, a, b));
                 sp += 1;
-                pc += 4;
             }
-            20 => {
-                // ROTATE_X
-                body.push_str(&format!("current_p = mat3(1.0, 0.0, 0.0, 0.0, {:.5}, {:.5}, 0.0, {:.5}, {:.5}) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
-                pc += 4;
-            }
-            21 => {
-                // ROTATE_Y
-                body.push_str(&format!("current_p = mat3({:.5}, 0.0, {:.5}, 0.0, 1.0, 0.0, {:.5}, 0.0, {:.5}) * current_p;\n", bytecode[pc+1], -bytecode[pc+2], bytecode[pc+2], bytecode[pc+1]));
-                pc += 4;
-            }
-            22 => {
-                // ROTATE_Z
-                body.push_str(&format!("current_p = mat3({:.5}, {:.5}, 0.0, {:.5}, {:.5}, 0.0, 0.0, 0.0, 1.0) * current_p;\n", bytecode[pc+1], bytecode[pc+2], -bytecode[pc+2], bytecode[pc+1]));
-                pc += 4;
+            20..=22 => {
+                // ROTATE_X / Y / Z by (cos, sin)
+                let (c, s) = (prm.f(a(1)), prm.f(a(2)));
+                let m = match iop {
+                    20 => format!("mat3(1.0, 0.0, 0.0, 0.0, {c}, {s}, 0.0, -{s}, {c})"),
+                    21 => format!("mat3({c}, 0.0, -{s}, 0.0, 1.0, 0.0, {s}, 0.0, {c})"),
+                    _ => format!("mat3({c}, {s}, 0.0, -{s}, {c}, 0.0, 0.0, 0.0, 1.0)"),
+                };
+                body.push_str(&format!("current_p = {} * current_p;\n", m));
             }
             23 => {
-                // SCALE
-                body.push_str(&format!(
-                    "current_scale *= {:.5};\ncurrent_p *= vec3({:.5}, {:.5}, {:.5});\n",
-                    bytecode[pc + 4],
-                    bytecode[pc + 1],
-                    bytecode[pc + 2],
-                    bytecode[pc + 3]
-                ));
-                pc += 8;
+                // SCALE(inverse per-axis factors, distance factor)
+                let (k, v) = (prm.f(a(4)), prm.v3(a(1), a(2), a(3)));
+                body.push_str(&format!("current_scale *= {};\ncurrent_p *= {};\n", k, v));
             }
             24 => {
                 // MOVE
-                body.push_str(&format!(
-                    "current_p -= vec3({:.5}, {:.5}, {:.5});\n",
-                    bytecode[pc + 1],
-                    bytecode[pc + 2],
-                    bytecode[pc + 3]
-                ));
-                pc += 4;
+                let v = prm.v3(a(1), a(2), a(3));
+                body.push_str(&format!("current_p -= {};\n", v));
             }
             26 => {
                 // REPEAT
-                body.push_str(&format!(
-                    "current_p = opRep(current_p, vec3({:.5}, {:.5}, {:.5}));\n",
-                    bytecode[pc + 1],
-                    bytecode[pc + 2],
-                    bytecode[pc + 3]
-                ));
-                pc += 4;
+                let v = prm.v3(a(1), a(2), a(3));
+                body.push_str(&format!("current_p = opRep(current_p, {});\n", v));
             }
             25 => {
                 // POP_TRANSFORM
@@ -354,19 +446,12 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
                     "current_p = p{}; current_scale = sc{};\n",
                     tsp, tsp
                 ));
-                pc += 4;
             }
             30 => {
                 // PUSH_COLOR
-                body.push_str(&format!(
-                    "c{} = current_col; current_col = vec3({:.5}, {:.5}, {:.5});\n",
-                    csp,
-                    bytecode[pc + 1],
-                    bytecode[pc + 2],
-                    bytecode[pc + 3]
-                ));
+                let v = prm.v3(a(1), a(2), a(3));
+                body.push_str(&format!("c{} = current_col; current_col = {};\n", csp, v));
                 csp += 1;
-                pc += 4;
             }
             31 => {
                 // POP_COLOR
@@ -375,12 +460,10 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
                 }
                 csp -= 1;
                 body.push_str(&format!("current_col = c{};\n", csp));
-                pc += 4;
             }
-            _ => {
-                pc += 4;
-            }
+            _ => {} // lights (40/41, read by extract_light) and unknown ops
         }
+        pc += width;
 
         max_sp = max_sp.max(sp);
         max_tsp = max_tsp.max(tsp);
@@ -410,7 +493,10 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
     declare_registers(&mut decls, "vec3", "c", max_csp);
     decls.push_str(&body);
 
-    Ok(decls)
+    Ok(SceneProgram {
+        body: decls,
+        params: prm.0,
+    })
 }
 
 /// Upper bound on any one register stack's depth in a generated shader.
@@ -424,13 +510,14 @@ fn declare_registers(out: &mut String, ty: &str, prefix: &str, count: i32) {
     }
 }
 
-/// Build the complete scene fragment shader for a bytecode program.
-pub fn build_scene_source(bytecode: &[f32]) -> Result<String, String> {
-    let body = generate_shader_body(bytecode)?;
-    let light_setup = extract_light_setup(bytecode);
-    Ok(SHADER_TEMPLATE
-        .replace("{GENERATED_BODY}", &body)
-        .replace("{LIGHT_SETUP}", &light_setup))
+/// Build the complete scene fragment shader for a program's structure.
+/// `param_count` is `SceneProgram::params.len()`, which is a function of
+/// the structure alone (every opcode always stores the same number of
+/// params), so it never varies for a given cache key.
+pub fn build_scene_source(body: &str, param_count: usize) -> String {
+    SHADER_TEMPLATE
+        .replace("{PARAM_COUNT}", &param_count.max(HEADER_PARAMS).to_string())
+        .replace("{GENERATED_BODY}", body)
 }
 
 /// Parse and validate GLSL into naga IR without touching wgpu, so syntax
@@ -515,57 +602,155 @@ pub fn build_pipeline_checked(
     }
 }
 
-/// The outcome of compiling a scene. `generation` is the newest scene
-/// request this result covers (older queued requests it superseded are
-/// covered too), so callers waiting on generation N can treat any result
-/// with generation >= N as "your scene is done".
+/// Compiled scene pipelines keyed by their structure (`SceneProgram::body`),
+/// shared between the renderer (instant installs on a hit) and the compile
+/// worker (never compiles the same structure twice). Least-recently-used
+/// entries are dropped beyond `capacity`.
+pub struct PipelineCache {
+    entries: HashMap<Arc<str>, (Arc<wgpu::RenderPipeline>, u64)>,
+    clock: u64,
+    capacity: usize,
+}
+
+/// How many distinct scene structures stay compiled. Each costs a little
+/// GPU memory; 32 covers undo/redo across a long editing session.
+pub const PIPELINE_CACHE_CAPACITY: usize = 32;
+
+pub type SharedPipelineCache = Arc<Mutex<PipelineCache>>;
+
+impl PipelineCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            clock: 0,
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn shared(capacity: usize) -> SharedPipelineCache {
+        Arc::new(Mutex::new(Self::new(capacity)))
+    }
+
+    pub fn get(&mut self, key: &str) -> Option<Arc<wgpu::RenderPipeline>> {
+        self.clock += 1;
+        let now = self.clock;
+        self.entries.get_mut(key).map(|(p, used)| {
+            *used = now;
+            p.clone()
+        })
+    }
+
+    pub fn insert(&mut self, key: Arc<str>, pipeline: Arc<wgpu::RenderPipeline>) {
+        self.clock += 1;
+        self.entries.insert(key, (pipeline, self.clock));
+        while self.entries.len() > self.capacity {
+            let oldest = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => self.entries.remove(&k),
+                None => break,
+            };
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// A scene the renderer needs a pipeline for.
+pub struct SceneJob {
+    pub generation: u64,
+    pub key: Arc<str>,
+    pub params: Vec<f32>,
+}
+
+/// The outcome of a `SceneJob`. `generation` is the newest scene request
+/// this result covers (older queued requests it superseded are covered
+/// too), so callers waiting on generation N can treat any result with
+/// generation >= N as "your scene is done". On success the pipeline is
+/// meant to be installed together with `params`.
 pub struct SceneResult {
     pub generation: u64,
-    pub pipeline: Result<wgpu::RenderPipeline, String>,
+    pub key: Arc<str>,
+    pub params: Vec<f32>,
+    pub pipeline: Result<Arc<wgpu::RenderPipeline>, String>,
 }
 
 /// Start the background scene compiler and return the queue that feeds it.
-/// Jobs are `(generation, bytecode)`, with generations increasing.
 ///
-/// A single long-lived worker compiles scenes one at a time. Before each
-/// compile it drains the queue and keeps only the newest bytecode, so edits
-/// made while a slow driver compile is running collapse into one follow-up
-/// compile instead of piling up as parallel threads. Because compiles are
-/// sequential, results arrive on `tx` in edit order: an older, slower
-/// compile can never replace a newer scene.
+/// A single long-lived worker handles jobs one at a time. Before each one
+/// it drains the queue and keeps only the newest, so edits made while a
+/// slow driver compile is running collapse into one follow-up instead of
+/// piling up. Because jobs run sequentially, results arrive on `tx` in edit
+/// order. A job whose structure is already in `cache` (e.g. the same shape
+/// was queued twice while it compiled) is answered without compiling.
 pub fn spawn_scene_compiler(
     device: Arc<wgpu::Device>,
     layout: Arc<wgpu::PipelineLayout>,
     format: wgpu::TextureFormat,
+    cache: SharedPipelineCache,
     tx: mpsc::Sender<SceneResult>,
     log_path: PathBuf,
-) -> mpsc::Sender<(u64, Vec<f32>)> {
-    let (job_tx, job_rx) = mpsc::channel::<(u64, Vec<f32>)>();
+) -> mpsc::Sender<SceneJob> {
+    let (job_tx, job_rx) = mpsc::channel::<SceneJob>();
 
     std::thread::spawn(move || {
         while let Ok(mut job) = job_rx.recv() {
             while let Ok(newer) = job_rx.try_recv() {
                 job = newer;
             }
-            let (generation, bytecode) = job;
 
-            let pipeline = build_scene_source(&bytecode)
-                .map_err(|e| format!("Scene rejected (malformed bytecode): {}", e))
-                .and_then(|source| {
-                    build_pipeline_checked(&device, &layout, format, "IronSmith Scene", &source)
-                        .map_err(|e| format!("Scene shader rejected: {}", e))
-                });
-            if let Err(e) = &pipeline {
-                log_line(&log_path, e);
-            }
+            let cached = cache.lock().ok().and_then(|mut c| c.get(&job.key));
+            let pipeline = match cached {
+                Some(p) => Ok(p),
+                None => {
+                    let started = std::time::Instant::now();
+                    let source = build_scene_source(&job.key, job.params.len());
+                    let result = build_pipeline_checked(
+                        &device,
+                        &layout,
+                        format,
+                        "IronSmith Scene",
+                        &source,
+                    )
+                    .map(Arc::new)
+                    .map_err(|e| format!("Scene shader rejected: {}", e));
+                    match &result {
+                        Ok(p) => {
+                            let cached = cache
+                                .lock()
+                                .map(|mut c| {
+                                    c.insert(job.key.clone(), p.clone());
+                                    c.len()
+                                })
+                                .unwrap_or(0);
+                            log_line(
+                                &log_path,
+                                &format!(
+                                    "Scene compiled in {:.2}s ({} params, {} structures cached)",
+                                    started.elapsed().as_secs_f32(),
+                                    job.params.len(),
+                                    cached
+                                ),
+                            );
+                        }
+                        Err(e) => log_line(&log_path, e),
+                    }
+                    result
+                }
+            };
 
-            if tx
-                .send(SceneResult {
-                    generation,
-                    pipeline,
-                })
-                .is_err()
-            {
+            let result = SceneResult {
+                generation: job.generation,
+                key: job.key,
+                params: job.params,
+                pipeline,
+            };
+            if tx.send(result).is_err() {
                 break; // renderer is gone
             }
         }
@@ -578,52 +763,147 @@ pub fn spawn_scene_compiler(
 mod tests {
     use super::*;
 
+    fn body(bytecode: &[f32]) -> String {
+        generate_program(bytecode).unwrap().body
+    }
+
+    /// Full shader source for a bytecode program, validated by naga.
+    fn validate(bytecode: &[f32]) -> String {
+        let prog = generate_program(bytecode).unwrap();
+        let source = build_scene_source(&prog.body, prog.params.len());
+        parse_glsl_fragment(&source).unwrap();
+        source
+    }
+
     #[test]
     fn empty_bytecode_returns_a_miss() {
-        let body = generate_shader_body(&[]).unwrap();
-        assert!(body.contains("return Hit(999999.0, vec3(0.0), 0);"));
-        assert!(!body.contains("return s0;"));
+        let b = body(&[]);
+        assert!(b.contains("return Hit(999999.0, vec3(0.0), 0);"));
+        assert!(!b.contains("return s0;"));
     }
 
     #[test]
     fn halt_opcode_stops_generation() {
-        let body = generate_shader_body(&[0.0, 0.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0]).unwrap();
-        assert!(!body.contains("sdSphere"));
+        assert!(!body(&[0.0, 0.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0]).contains("sdSphere"));
     }
 
     #[test]
-    fn sphere_opcode_emits_sdsphere_call() {
-        let bytecode = [1.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let body = generate_shader_body(&bytecode).unwrap();
-        assert!(
-            body.contains(
-                "s0 = Hit(sdSphere(current_p, 5.00000) * current_scale, current_col, 1);"
-            )
-        );
-        assert!(body.contains("return s0;"));
+    fn sphere_reads_its_radius_and_material_from_params() {
+        let prog = generate_program(&[1.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        let (r, m) = (HEADER_PARAMS, HEADER_PARAMS + 1);
+        assert!(prog.body.contains(&format!(
+            "s0 = Hit(sdSphere(current_p, prm[{r}]) * current_scale, current_col, int(prm[{m}]));"
+        )));
+        assert!(prog.body.contains("return s0;"));
+        assert_eq!(prog.params[r], 5.0);
+        assert_eq!(prog.params[m], 1.0);
     }
 
     #[test]
     fn union_opcode_combines_two_shapes() {
         // sphere, sphere, union, halt
-        let bytecode = [
+        let b = body(&[
             1.0, 1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ];
-        let body = generate_shader_body(&bytecode).unwrap();
-        assert!(body.contains("s0 = opU(s0, s1);"));
-        assert!(body.contains("return s0;"));
+        ]);
+        assert!(b.contains("s0 = opU(s0, s1);"));
+        assert!(b.contains("return s0;"));
     }
 
     #[test]
     fn rotate_and_pop_transform_restore_state() {
         // rotateX(c=1,s=0), sphere, pop-transform, halt
-        let bytecode = [
+        let b = body(&[
             20.0, 1.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ];
-        let body = generate_shader_body(&bytecode).unwrap();
-        assert!(body.contains("p0 = current_p; sc0 = current_scale;"));
-        assert!(body.contains("current_p = mat3(1.0, 0.0, 0.0, 0.0, 1.00000, 0.00000, 0.0, -0.00000, 1.00000) * current_p;"));
-        assert!(body.contains("current_p = p0; current_scale = sc0;"));
+        ]);
+        let (c, s) = (HEADER_PARAMS, HEADER_PARAMS + 1);
+        assert!(b.contains("p0 = current_p; sc0 = current_scale;"));
+        assert!(b.contains(&format!(
+            "current_p = mat3(1.0, 0.0, 0.0, 0.0, prm[{c}], prm[{s}], 0.0, -prm[{s}], prm[{c}]) * current_p;"
+        )));
+        assert!(b.contains("current_p = p0; current_scale = sc0;"));
+    }
+
+    /// paint(rgb, move(x, y, z, rotateY(cos, sin, box(w, h, d)))) twice,
+    /// unioned: every kind of number the language has.
+    fn painted_scene(x: f32, rgb: [f32; 3], w: f32, angle: f32, mat: f32) -> Vec<f32> {
+        let (c, s) = (angle.cos(), angle.sin());
+        let one = |dx: f32| {
+            vec![
+                30.0,
+                rgb[0],
+                rgb[1],
+                rgb[2], //
+                24.0,
+                x + dx,
+                1.0,
+                2.0, //
+                21.0,
+                c,
+                s,
+                0.0, //
+                2.0,
+                w,
+                1.0,
+                1.0,
+                mat,
+                0.0,
+                0.0,
+                0.0, //
+                25.0,
+                0.0,
+                0.0,
+                0.0, //
+                25.0,
+                0.0,
+                0.0,
+                0.0, //
+                31.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        };
+        let mut bc = one(0.0);
+        bc.extend(one(3.0));
+        bc.extend([10.0, 0.0, 0.0, 0.0]);
+        bc
+    }
+
+    #[test]
+    fn number_only_edits_keep_the_same_structure() {
+        // The heart of the pipeline cache: positions, colours, sizes,
+        // angles and materials change only the params, never the GLSL.
+        let a = generate_program(&painted_scene(1.0, [1.0, 0.0, 0.0], 2.0, 0.3, 0.0)).unwrap();
+        let b = generate_program(&painted_scene(7.5, [0.1, 0.9, 0.2], 4.0, 1.2, 3.0)).unwrap();
+        assert_eq!(a.body, b.body);
+        assert_ne!(a.params, b.params);
+        assert_eq!(a.params.len(), b.params.len());
+        // No literal scene numbers leak into the source.
+        assert!(!a.body.contains("7.5") && !a.body.contains("1.0)") && !a.body.contains("0.3"));
+    }
+
+    #[test]
+    fn structural_edits_change_the_key() {
+        let base = painted_scene(1.0, [1.0, 0.0, 0.0], 2.0, 0.3, 0.0);
+        let mut more = base.clone();
+        more.extend([1.0, 1.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0]); // + sphere, union
+        let mut diff = base.clone();
+        let n = diff.len();
+        diff[n - 4] = 11.0; // union -> difference
+        let key = |bc: &[f32]| generate_program(bc).unwrap().body;
+        assert_ne!(key(&base), key(&more));
+        assert_ne!(key(&base), key(&diff));
+    }
+
+    #[test]
+    fn params_line_up_with_the_bytecode() {
+        let prog = generate_program(&painted_scene(1.5, [0.25, 0.5, 0.75], 2.0, 0.0, 2.0)).unwrap();
+        let h = HEADER_PARAMS;
+        // First draw: colour, move, rotate (cos, sin), box extents, material.
+        assert_eq!(
+            &prog.params[h..h + 12],
+            &[0.25, 0.5, 0.75, 1.5, 1.0, 2.0, 1.0, 0.0, 2.0, 1.0, 1.0, 2.0]
+        );
     }
 
     #[test]
@@ -631,14 +911,13 @@ mod tests {
         // One sphere then a difference: mid-edit state where the second
         // operand was an unresolved shape reference. Used to underflow
         // and abort the release viewer.
-        let bytecode = [1.0, 5.0, 0.0, 0.0, 11.0, 0.0, 0.0, 0.0];
-        assert!(generate_shader_body(&bytecode).is_err());
+        assert!(generate_program(&[1.0, 5.0, 0.0, 0.0, 11.0, 0.0, 0.0, 0.0]).is_err());
     }
 
     #[test]
     fn unbalanced_pops_error_instead_of_panicking() {
-        assert!(generate_shader_body(&[25.0, 0.0, 0.0, 0.0]).is_err());
-        assert!(generate_shader_body(&[31.0, 0.0, 0.0, 0.0]).is_err());
+        assert!(generate_program(&[25.0, 0.0, 0.0, 0.0]).is_err());
+        assert!(generate_program(&[31.0, 0.0, 0.0, 0.0]).is_err());
     }
 
     /// Bytecode for `n` spheres pushed one after another, then joined by
@@ -656,9 +935,23 @@ mod tests {
 
     #[test]
     fn full_scene_shader_validates() {
-        // Covers the template itself (including the looped calcNormal).
-        let source = build_scene_source(&[1.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
-        parse_glsl_fragment(&source).unwrap();
+        // Covers the template itself (looped calcNormal, params buffer,
+        // light header) and every opcode.
+        validate(&painted_scene(1.0, [1.0, 0.0, 0.0], 2.0, 0.3, 1.0));
+        validate(&[
+            1.0, 5.0, 0.0, 0.0, // sphere
+            3.0, 1.0, 2.0, 0.0, // cylinder
+            11.0, 0.0, 0.0, 0.0, // difference
+            4.0, 1.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0, // cone
+            12.0, 0.0, 0.0, 0.0, // intersection
+            23.0, 0.5, 0.5, 0.5, 2.0, 0.0, 0.0, 0.0, // scale
+            26.0, 4.0, 0.0, 0.0, // repeat
+            20.0, 1.0, 0.0, 0.0, 22.0, 1.0, 0.0, 0.0, // rotate x, z
+            5.0, 2.0, 0.5, 2.0, // torus
+            25.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0,
+            10.0, 0.0, 0.0, 0.0, // union
+            40.0, 1.0, 2.0, 3.0, 41.0, 0.5, 0.0, 0.0, // light
+        ]);
     }
 
     #[test]
@@ -666,9 +959,7 @@ mod tests {
         // Peaks at 20 live shapes. The old fixed s0..s15 register file
         // only checked the *final* depth, so this produced GLSL using an
         // undeclared `s16` and the scene was silently rejected.
-        let source = build_scene_source(&stacked_spheres(20)).unwrap();
-        assert!(source.contains("s19"));
-        parse_glsl_fragment(&source).unwrap();
+        assert!(validate(&stacked_spheres(20)).contains("s19"));
     }
 
     #[test]
@@ -682,48 +973,64 @@ mod tests {
         for _ in 0..20 {
             bc.extend_from_slice(&[25.0, 0.0, 0.0, 0.0]);
         }
-        let source = build_scene_source(&bc).unwrap();
-        parse_glsl_fragment(&source).unwrap();
+        validate(&bc);
     }
 
     #[test]
     fn absurdly_deep_stack_is_rejected() {
-        assert!(generate_shader_body(&stacked_spheres(MAX_REGISTERS as usize + 1)).is_err());
+        assert!(generate_program(&stacked_spheres(MAX_REGISTERS as usize + 1)).is_err());
     }
 
     #[test]
     fn truncated_instruction_errors_instead_of_panicking() {
         // A box needs 8 floats; only 4 arrived.
-        assert!(generate_shader_body(&[2.0, 1.0, 1.0, 1.0]).is_err());
+        assert!(generate_program(&[2.0, 1.0, 1.0, 1.0]).is_err());
+        assert_eq!(extract_light(&[2.0, 1.0, 1.0, 1.0])[0], 0.0);
     }
 
     #[test]
-    fn light_opcode_overrides_default_light() {
+    fn light_opcode_fills_the_header() {
         // sphere, light(10, 20, 5), intensity 2, halt
         let bytecode = [
             1.0, 5.0, 0.0, 0.0, 40.0, 10.0, 20.0, 5.0, 41.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
-        let setup = extract_light_setup(&bytecode);
-        assert!(setup.contains("normalize(vec3(10.00000, 20.00000, 5.00000))"));
-        assert!(setup.contains("light_intensity = 2.00000"));
+        let header = extract_light(&bytecode);
+        assert_eq!(&header[..5], &[1.0, 10.0, 20.0, 5.0, 2.0]);
+        // And it reaches the params buffer the shader reads.
+        assert_eq!(
+            &generate_program(&bytecode).unwrap().params[..5],
+            &header[..5]
+        );
+    }
+
+    #[test]
+    fn light_without_intensity_defaults_to_one() {
+        assert_eq!(extract_light(&[40.0, 0.0, 1.0, 0.0])[4], 1.0);
     }
 
     #[test]
     fn no_light_opcode_keeps_default_light() {
-        let bytecode = [1.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(extract_light_setup(&bytecode), DEFAULT_LIGHT_SETUP);
+        assert_eq!(extract_light(&[1.0, 5.0, 0.0, 0.0])[0], 0.0);
     }
 
     #[test]
     fn light_argument_floats_are_not_misread_as_opcodes() {
         // A box with a 40.0 argument must not be treated as a light op.
-        let bytecode = [2.0, 40.0, 40.0, 40.0, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(extract_light_setup(&bytecode), DEFAULT_LIGHT_SETUP);
+        assert_eq!(
+            extract_light(&[2.0, 40.0, 40.0, 40.0, 0.0, 0.0, 0.0, 0.0])[0],
+            0.0
+        );
     }
 
     #[test]
     fn zero_direction_light_falls_back_to_default() {
-        let bytecode = [40.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        assert_eq!(extract_light_setup(&bytecode), DEFAULT_LIGHT_SETUP);
+        assert_eq!(extract_light(&[40.0, 0.0, 0.0, 0.0])[0], 0.0);
+    }
+
+    #[test]
+    fn light_edits_do_not_change_structure() {
+        let a = body(&[1.0, 5.0, 0.0, 0.0]);
+        let b = body(&[1.0, 5.0, 0.0, 0.0, 40.0, 1.0, 1.0, 1.0]);
+        assert_eq!(a, b);
     }
 }

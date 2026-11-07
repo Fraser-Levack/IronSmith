@@ -22,7 +22,7 @@ import Data.List (sort, elemIndex, intercalate)
 import Data.Maybe (listToMaybe, fromMaybe)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, IronConfig)
+import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, cfgAutoCompileDelayMs, IronConfig)
 import AppCore
 import Selection (deleteRange, selectedText)
 
@@ -74,9 +74,14 @@ handleEvent _ (AppEvent (CompileTimerFired version)) = do
         let newStatus = case newErr of
                 Nothing -> Normal
                 Just (e, lineNum) -> ErrorMsg e lineNum
-        -- The 500ms quiet period has elapsed with no further typing, so the
-        -- *next* edit starts a brand-new undo boundary (see handleEditorInput).
-        put (st { _status = newStatus, _pendingUndoSnapshot = True })
+        put (st { _status = newStatus })
+
+-- The user paused for undoGroupingMs with no further edits, so the *next*
+-- edit starts a brand-new undo step (see handleEditorInput).
+handleEvent _ (AppEvent (UndoBoundary version)) = do
+    st <- get
+    when (version == _editVersion st) $
+        put (st { _pendingUndoSnapshot = True })
 
 -- Progress updates from a background export
 handleEvent _ (AppEvent (ExportProgress p)) = do
@@ -370,10 +375,7 @@ runCommand chan CmdUndo = do
                     , _isDirty = True
                     , _editVersion = nextVersion
                     })
-            liftIO $ forkIO $ do
-                threadDelay 500000
-                writeBChan chan (CompileTimerFired nextVersion)
-            return ()
+            scheduleCompile chan nextVersion
 
 -- Redo: the mirror image of undo. No-op on an empty redo stack.
 runCommand chan CmdRedo = do
@@ -391,10 +393,7 @@ runCommand chan CmdRedo = do
                     , _isDirty = True
                     , _editVersion = nextVersion
                     })
-            liftIO $ forkIO $ do
-                threadDelay 500000
-                writeBChan chan (CompileTimerFired nextVersion)
-            return ()
+            scheduleCompile chan nextVersion
 
 -- Copy the selection, or the whole current line when nothing is selected.
 runCommand _ CmdCopy = do
@@ -444,14 +443,14 @@ runCommand _ CmdSave = do
 --
 -- Undo/redo snapshot heuristic: pushing a full-buffer snapshot on every
 -- keystroke would make undo annoyingly fine-grained (undoing one character
--- at a time). Instead we coalesce edits into the same 500ms "debounce
--- window" already used for auto-compile: a snapshot of the *pre-edit* text
--- is only pushed when `_pendingUndoSnapshot` is True, which happens (a) on
--- the very first edit after loading/opening a file, and (b) whenever the
--- debounce timer actually fires (see CompileTimerFired above), meaning the
--- user paused for >=500ms. Any burst of typing/deleting within one window
--- collapses to a single undo step; pausing (or the compile firing) starts a
--- fresh boundary for the next burst. A new edit after an undo always clears
+-- at a time). Instead we coalesce edits into 500ms bursts: a snapshot of
+-- the *pre-edit* text is only pushed when `_pendingUndoSnapshot` is True,
+-- which happens (a) on the very first edit after loading/opening a file,
+-- and (b) when the UndoBoundary timer fires (see scheduleCompile), meaning
+-- the user paused for >= undoGroupingMs. Any burst of typing/deleting
+-- within one window collapses to a single undo step; pausing starts a
+-- fresh boundary for the next burst. (This used to share the compile
+-- debounce; they are separate so the compile delay can be much shorter.) A new edit after an undo always clears
 -- the redo stack (standard undo/redo semantics).
 --
 -- Selection: Shift+arrows/Home/End and left-drag extend a selection from
@@ -587,10 +586,27 @@ trackEdit chan action = do
                  , _redoStack = []
                  , _pendingUndoSnapshot = False
                  })
-        _ <- liftIO $ forkIO $ do
-            threadDelay 500000 -- Sleep for 500ms
-            writeBChan chan (CompileTimerFired nextVersion)
-        return ()
+        scheduleCompile chan nextVersion
+
+-- | Start the two debounce timers for edit `version`: the recompile fires
+--   after the configured `auto_compile_delay_ms` (short, since number-only
+--   edits now show in the viewer without a shader compile), and the undo
+--   grouping boundary after a fixed 500ms pause. Each only acts if no newer
+--   edit has happened by the time it fires.
+scheduleCompile :: BChan CustomEvent -> Int -> EventM Name AppState ()
+scheduleCompile chan version = do
+    delayMs <- max 0 . cfgAutoCompileDelayMs . _config <$> get
+    _ <- liftIO $ forkIO $ do
+        threadDelay (delayMs * 1000)
+        writeBChan chan (CompileTimerFired version)
+    _ <- liftIO $ forkIO $ do
+        threadDelay (undoGroupingMs * 1000)
+        writeBChan chan (UndoBoundary version)
+    return ()
+
+-- | Edits separated by less than this pause collapse into one undo step.
+undoGroupingMs :: Int
+undoGroupingMs = 500
 
 -- | Best-effort copy to the OS clipboard so text can be pasted into other
 --   programs. Runs in the background; failures (no clipboard tool) are

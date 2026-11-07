@@ -38,22 +38,29 @@ pub struct Renderer<'a> {
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
 
-    render_pipeline: wgpu::RenderPipeline,
+    /// The live scene pipeline, its structure key, and (in `params_buffer`)
+    /// the numbers it reads. These three always describe the same scene.
+    render_pipeline: Arc<wgpu::RenderPipeline>,
+    active_key: Arc<str>,
+    params_buffer: wgpu::Buffer,
 
     uniform_buffer: wgpu::Buffer,
+    bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     pub uniforms: ShaderUniforms,
     start_time: Instant,
     log_path: PathBuf,
 
+    /// Compiled pipelines by scene structure, shared with the compiler.
+    pipeline_cache: shader::SharedPipelineCache,
     /// Finished scene compiles, in edit order (see `spawn_scene_compiler`).
     pipeline_rx: mpsc::Receiver<shader::SceneResult>,
-    /// `(generation, bytecode)` queue feeding the background scene compiler.
-    scene_jobs: mpsc::Sender<(u64, Vec<f32>)>,
+    /// Queue feeding the background scene compiler.
+    scene_jobs: mpsc::Sender<shader::SceneJob>,
     /// Generation of the most recently submitted scene.
     submitted_generation: u64,
-    /// Newest generation whose compile has finished, and its error if it
-    /// failed (the previous working pipeline stays active in that case).
+    /// Newest generation that has finished (installed, or failed), and its
+    /// error if it failed (the previous working scene stays active then).
     completed_generation: u64,
     last_scene_error: Option<String>,
 
@@ -103,6 +110,45 @@ fn create_scene_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Smallest scene-params buffer, in bytes (the header plus a few shapes).
+const MIN_PARAMS_BYTES: u64 = 4096;
+
+/// Storage buffer holding a scene's `prm[]` values, with room for at least
+/// `floats` of them (rounded up to a power of two to limit reallocation).
+fn create_params_buffer(device: &wgpu::Device, floats: usize) -> wgpu::Buffer {
+    let bytes = ((floats * 4) as u64)
+        .next_power_of_two()
+        .max(MIN_PARAMS_BYTES);
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Scene Params"),
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_scene_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    params_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ],
+        label: Some("Scene Bind Group"),
+    })
 }
 
 fn create_filter_bind_group(
@@ -197,27 +243,35 @@ impl Renderer<'_> {
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
-            label: None,
+                // The scene's numbers (`prm[]`), see shader::SceneProgram.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+            label: Some("Scene Bind Group Layout"),
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-            label: None,
-        });
+        let params_buffer = create_params_buffer(&device, 0);
+        let bind_group =
+            create_scene_bind_group(&device, &bind_group_layout, &uniform_buffer, &params_buffer);
 
         let pipeline_layout = Arc::new(device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
@@ -228,23 +282,35 @@ impl Renderer<'_> {
         )); // Convert to Arc
 
         let (pipeline_tx, pipeline_rx) = mpsc::channel();
+        let pipeline_cache = shader::PipelineCache::shared(shader::PIPELINE_CACHE_CAPACITY);
 
         let scene_jobs = shader::spawn_scene_compiler(
             device.clone(),
             pipeline_layout,
             SCENE_FORMAT,
+            pipeline_cache.clone(),
             pipeline_tx,
             log_path.clone(),
         );
-        scene_jobs
-            .send((0, vec![0.0]))
-            .expect("Scene compiler thread failed to start");
 
+        // Compile the empty scene synchronously so there is always a
+        // working pipeline to fall back on.
+        let empty = shader::generate_program(&[])
+            .map_err(|e| anyhow::anyhow!("Initial scene generation failed: {}", e))?;
+        let empty_key: Arc<str> = Arc::from(empty.body.as_str());
+        scene_jobs
+            .send(shader::SceneJob {
+                generation: 0,
+                key: empty_key.clone(),
+                params: empty.params.clone(),
+            })
+            .expect("Scene compiler thread failed to start");
         let render_pipeline = pipeline_rx
             .recv()
             .expect("Scene compiler thread stopped")
             .pipeline
             .map_err(|e| anyhow::anyhow!("Initial shader compilation failed: {}", e))?;
+        queue.write_buffer(&params_buffer, 0, bytemuck::cast_slice(&empty.params));
 
         // ── Filter pass setup ────────────────────────────────────────────
         let scene_view = create_scene_view(&device, size.width, size.height);
@@ -324,11 +390,15 @@ impl Renderer<'_> {
             config,
             size,
             render_pipeline,
+            active_key: empty_key,
+            params_buffer,
             uniform_buffer,
+            bind_group_layout,
             bind_group,
             uniforms,
             start_time: Instant::now(),
             log_path,
+            pipeline_cache,
             pipeline_rx,
             scene_jobs,
             submitted_generation: 0,
@@ -379,15 +449,19 @@ impl Renderer<'_> {
         let t = self.start_time.elapsed().as_secs_f32();
         self.write_uniforms_at(camera, t, self.size.width, self.size.height);
 
-        // Results arrive in edit order, so the last one queued is newest.
+        // Results arrive in edit order. One that is older than a scene
+        // already installed instantly (a cache hit or number-only edit made
+        // while it compiled) is stale: the worker has cached its pipeline,
+        // but showing it would roll the scene back.
         while let Ok(result) = self.pipeline_rx.try_recv() {
-            self.completed_generation = result.generation;
+            if result.generation <= self.completed_generation {
+                continue;
+            }
             match result.pipeline {
                 Ok(pipeline) => {
-                    self.render_pipeline = pipeline;
-                    self.last_scene_error = None;
+                    self.install(result.generation, result.key, pipeline, &result.params)
                 }
-                Err(e) => self.last_scene_error = Some(e),
+                Err(e) => self.finish(result.generation, Some(e)),
             }
         }
 
@@ -396,14 +470,87 @@ impl Renderer<'_> {
         }
     }
 
+    /// Show a new scene. Number-only edits (same structure as the live
+    /// scene) and structures compiled earlier take effect immediately;
+    /// anything else is compiled in the background while the current scene
+    /// stays on screen.
     pub fn update_scene(&mut self, bytecode: Vec<f32>) {
         self.submitted_generation += 1;
-        if self
-            .scene_jobs
-            .send((self.submitted_generation, bytecode))
-            .is_err()
-        {
-            self.log_message("Scene compiler thread has stopped; scene not updated");
+        let generation = self.submitted_generation;
+
+        let program = match shader::generate_program(&bytecode) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = format!("Scene rejected (malformed bytecode): {}", e);
+                self.log_message(&msg);
+                self.finish(generation, Some(msg));
+                return;
+            }
+        };
+
+        if *program.body == *self.active_key {
+            self.write_params(&program.params);
+            self.finish(generation, None);
+            return;
+        }
+
+        let cached = self
+            .pipeline_cache
+            .lock()
+            .ok()
+            .and_then(|mut c| c.get(&program.body));
+        let key: Arc<str> = Arc::from(program.body);
+        match cached {
+            Some(pipeline) => self.install(generation, key, pipeline, &program.params),
+            None => {
+                let job = shader::SceneJob {
+                    generation,
+                    key,
+                    params: program.params,
+                };
+                if self.scene_jobs.send(job).is_err() {
+                    self.log_message("Scene compiler thread has stopped; scene not updated");
+                }
+            }
+        }
+    }
+
+    /// Make `pipeline` + `params` the live scene for `generation`.
+    fn install(
+        &mut self,
+        generation: u64,
+        key: Arc<str>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        params: &[f32],
+    ) {
+        self.render_pipeline = pipeline;
+        self.active_key = key;
+        self.write_params(params);
+        self.finish(generation, None);
+    }
+
+    /// Record that `generation` is done (successfully, or with `error`).
+    fn finish(&mut self, generation: u64, error: Option<String>) {
+        self.completed_generation = self.completed_generation.max(generation);
+        self.last_scene_error = error;
+    }
+
+    /// Upload the live scene's numbers, growing the buffer (and rebuilding
+    /// the bind group that points at it) when a bigger scene needs room.
+    fn write_params(&mut self, params: &[f32]) {
+        let bytes = (params.len() * 4) as u64;
+        if bytes > self.params_buffer.size() {
+            self.params_buffer = create_params_buffer(&self.device, params.len());
+            self.bind_group = create_scene_bind_group(
+                &self.device,
+                &self.bind_group_layout,
+                &self.uniform_buffer,
+                &self.params_buffer,
+            );
+        }
+        if !params.is_empty() {
+            self.queue
+                .write_buffer(&self.params_buffer, 0, bytemuck::cast_slice(params));
         }
     }
 

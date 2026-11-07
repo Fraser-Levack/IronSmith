@@ -10,6 +10,7 @@ import Data.Maybe (fromMaybe)
 import Config (IronConfig, defaultConfig, cfgKeybindings, defaultKeybindings)
 
 data CustomEvent = CompileTimerFired Int
+                 | UndoBoundary Int -- edit version that has been followed by a pause
                  | ExportProgress Float
                  | ExportFinished (Either (String, Int) FilePath)
     deriving (Show)

@@ -8,7 +8,7 @@ import System.Info (os)
 import Data.Char (isAlphaNum)
 import Data.List (nub, intercalate)
 import qualified Data.List.NonEmpty as NE
-import Control.Exception (catch, bracket, SomeException)
+import Control.Exception (catch, bracket, evaluate, SomeException)
 import Control.Concurrent (forkIO, threadDelay)
 import System.Timeout (timeout)
 
@@ -21,7 +21,7 @@ import Evaluator
 import Exporter (exportToOBJ)
 import Config
 
-import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, NoStream), terminateProcess)
+import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, Inherit, NoStream), terminateProcess)
 
 import Network.Socket
 import Network.Socket.ByteString (sendAll, recv)
@@ -66,13 +66,23 @@ launchViewer = do
 launchViewerDetached :: IO ()
 launchViewerDetached = do
     path <- viewerPath
+    -- The long-lived viewer must not keep our stdout/stderr open, or a
+    -- caller capturing `ironsmith render` output through a pipe (e.g.
+    -- Python's subprocess.run(capture_output=True)) never sees EOF and
+    -- hangs until the viewer is closed. On POSIX, NoStream + close_fds
+    -- closes them in the child. On Windows the process library only turns
+    -- handle inheritance off when close_fds is set *and* every std stream
+    -- is Inherit; the viewer then starts with no std handles, which is
+    -- fine because it logs to forge.log.
+    let stdio = if os == "mingw32" then Inherit else NoStream
     _ <- createProcess (proc path [])
-        { std_in = NoStream
-        , std_out = NoStream
-        , std_err = NoStream
+        { std_in = stdio
+        , std_out = stdio
+        , std_err = stdio
         , create_group = True
         , new_session = True     -- POSIX: survive the parent's terminal closing
         , detach_console = True  -- Windows: no console tied to ours
+        , close_fds = True
         }
     return ()
 
@@ -162,22 +172,34 @@ sendNetworkData bytes = do
 
 -- | Send and return once the bytes are written. Throws if the viewer is
 --   unreachable. The CLI uses this so it doesn't exit before sending.
+--
+--   The payload is forced *before* connecting: the viewer gives each
+--   connection 250ms to deliver its message, and a lazily built payload
+--   (e.g. a big scene's bytecode) would otherwise be computed while the
+--   socket sits idle, so the viewer closes it and the message is lost.
 sendNetworkDataSync :: C8.ByteString -> IO ()
-sendNetworkDataSync bytes = withViewerSocket (`sendAll` bytes)
+sendNetworkDataSync bytes = do
+    payload <- evaluate bytes
+    withViewerSocket (`sendAll` payload)
 
 -- | Send a command and wait (up to `seconds`) for the viewer's one-line
 --   reply ("OK ..." / "ERROR ..."). Half-closing our side tells the viewer
 --   the request is complete while keeping the connection open for the reply.
 requestViewer :: Int -> String -> IO (Either String String)
 requestViewer seconds cmd = do
-    result <- timeout (seconds * 1000000) (withViewerSocket exchange)
+    -- Build the request before connecting (see sendNetworkDataSync): the
+    -- CLI's screenshot command embeds an auto-framed camera pose, and
+    -- computing that lazily after connect took ~1s on a 100-shape scene,
+    -- long enough for the viewer to drop the idle connection.
+    payload <- evaluate (C8.pack cmd)
+    result <- timeout (seconds * 1000000) (withViewerSocket (exchange payload))
         `catch` \(e :: SomeException) -> return (Just (Left ("cannot reach the viewer: " ++ show e)))
     return $ case result of
         Nothing    -> Left ("no reply from the viewer within " ++ show seconds ++ "s")
         Just reply -> reply
   where
-    exchange sock = do
-        sendAll sock (C8.pack cmd)
+    exchange payload sock = do
+        sendAll sock payload
         shutdown sock ShutdownSend
         Right . trimReply . C8.unpack . C8.concat <$> recvAll sock
     recvAll sock = do
