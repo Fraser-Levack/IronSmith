@@ -43,11 +43,11 @@ Press **Ctrl+A** to play it in the viewer, or **Ctrl+Shift+V** to export it as a
 | | |
 |:---:|:---:|
 | <img src="./docs/gallery/starfighter.png" alt="Starfighter" width="400" /> | <img src="./docs/gallery/robot.png" alt="Robot" width="400" /> |
-| **[Starfighter "Kestrel"](./examples/starfighter.irsm)**: a swept-wing interceptor with glowing engines, over a ringed gas giant that catches the ship's shadow. | **[Bolt the robot](./examples/robot.irsm)**: a friendly little bot waving hello, with a glowing face, chest buttons and a potted flower. |
+| **[Starfighter](./examples/starfighter.irsm)**| **[Robot](./examples/robot.irsm)** |
 | <img src="./docs/gallery/forest_glade.png" alt="Forest glade" width="400" /> | <img src="./docs/gallery/lighthouse.png" alt="Lighthouse island" width="400" /> |
-| **[Forest glade](./examples/forest_glade.irsm)**: pines, oaks and birches around a clearing with a mirror pond, a fairy ring of toadstools, a mossy log and fireflies. | **[Lighthouse island at dusk](./examples/lighthouse.irsm)**: stripes cut with `repeat`, a lit lantern room, the keeper's cottage and a sailboat, all mirrored in a metal sea. |
+| **[Forest glade](./examples/forest_glade.irsm)**| **[Lighthouse island](./examples/lighthouse.irsm)**|
 | <img src="./docs/gallery/airship.png" alt="Steampunk airship" width="400" /> | |
-| **[Steampunk airship](./examples/airship.irsm)**: a ribbed canvas envelope, brass engines and propellers, a wooden gondola with lit portholes, and clouds below. | |
+| **[Steampunk airship](./examples/airship.irsm)**| |
 
 **Tricks these examples use:**
 - **Stripes:** `intersection(shape, repeat(...))`.
