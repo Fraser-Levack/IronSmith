@@ -145,60 +145,61 @@ resolveShape env shape = case shape of
   where
     go = resolveShape env
 
--- | THE POSTFIX COMPILER (Vec4 Packed for GPU Memory Banwidth)
 -- | THE POSTFIX COMPILER (Pre-baked Math & Vec4 Packed)
 compileShape :: Env -> Float -> Shape -> [Float]
-compileShape env mat shape = case shape of
-    
-    Cube ex ey ez -> 
+compileShape env mat shape = fst (compileShapeD env mat shape)
+
+-- | Compiled bytecode paired with the peak hit-stack depth it needs. The
+--   viewer turns every stack slot into a GLSL register, so keeping this
+--   small keeps generated shaders small; see 'emitCommutative'.
+type Compiled = ([Float], Int)
+
+compileShapeD :: Env -> Float -> Shape -> Compiled
+compileShapeD env mat shape = case shape of
+
+    Cube ex ey ez ->
         let w = evalExpr env ex / 2.0; h = evalExpr env ey / 2.0; d = evalExpr env ez / 2.0
-        in [2.0, w, h, d, mat, 0.0, 0.0, 0.0] -- 2 vec4s
-        
-    Sphere er -> 
+        in ([2.0, w, h, d, mat, 0.0, 0.0, 0.0], 1) -- 2 vec4s
+
+    Sphere er ->
         let r = evalExpr env er
-        in [1.0, r, mat, 0.0] -- 1 vec4
+        in ([1.0, r, mat, 0.0], 1) -- 1 vec4
 
-    Cylinder er eh -> 
+    Cylinder er eh ->
         let r = evalExpr env er; h = evalExpr env eh / 2.0
-        in [3.0, r, h, mat] -- 1 vec4
-        
-    Cone er et eh -> 
-        let r1 = evalExpr env er; r2 = evalExpr env et; h = evalExpr env eh / 2.0
-        in [4.0, r1, r2, h, mat, 0.0, 0.0, 0.0] -- 2 vec4s
-        
-    Torus er et -> 
-        let r = evalExpr env er; tr = evalExpr env et
-        in [5.0, r, tr, mat] -- 1 vec4
-        
-    Union a b -> 
-        compileShape env mat b ++ compileShape env mat a ++ [10.0, 0.0, 0.0, 0.0]
-        
-    Difference a b -> 
-        compileShape env mat b ++ compileShape env mat a ++ [11.0, 0.0, 0.0, 0.0]
+        in ([3.0, r, h, mat], 1) -- 1 vec4
 
-    Intersection a b -> 
-        compileShape env mat b ++ compileShape env mat a ++ [12.0, 0.0, 0.0, 0.0]
-        
+    Cone er et eh ->
+        let r1 = evalExpr env er; r2 = evalExpr env et; h = evalExpr env eh / 2.0
+        in ([4.0, r1, r2, h, mat, 0.0, 0.0, 0.0], 1) -- 2 vec4s
+
+    Torus er et ->
+        let r = evalExpr env er; tr = evalExpr env et
+        in ([5.0, r, tr, mat], 1) -- 1 vec4
+
+    -- The viewer pops the top of the stack as the op's *first* argument, so
+    -- `b` is pushed first. Difference isn't commutative: its order is fixed.
+    Union a b        -> emitCommutative 10.0 (go a) (go b)
+    Difference a b   -> emitBinary 11.0 (go b) (go a)
+    Intersection a b -> emitCommutative 12.0 (go a) (go b)
+
     -- Transform Ops
-    Move ex ey ez innerShape -> 
+    Move ex ey ez innerShape ->
         let x = evalExpr env ex; y = evalExpr env ey; z = evalExpr env ez
-        in [24.0, x, y, z] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
-        
+        in wrapTransform [24.0, x, y, z] innerShape
+
     -- PRE-BAKED TRIGONOMETRY: GPU no longer calculates sin/cos
     RotateX edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-            c = cos rads; s = sin rads
-        in [20.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+        in wrapTransform [20.0, cos rads, sin rads, 0.0] innerShape
 
     RotateY edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-            c = cos rads; s = sin rads
-        in [21.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+        in wrapTransform [21.0, cos rads, sin rads, 0.0] innerShape
 
     RotateZ edeg innerShape ->
         let rads = degToRad (evalExpr env edeg)
-            c = cos rads; s = sin rads
-        in [22.0, c, s, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+        in wrapTransform [22.0, cos rads, sin rads, 0.0] innerShape
 
     -- PRE-BAKED DIVISION: GPU now uses fast multiplication
     Scale ex ey ez innerShape ->
@@ -207,36 +208,58 @@ compileShape env mat shape = case shape of
             isx = if sx == 0 then 0 else 1.0 / sx
             isy = if sy == 0 then 0 else 1.0 / sy
             isz = if sz == 0 then 0 else 1.0 / sz
-        in [23.0, isx, isy, isz, min_s, 0.0, 0.0, 0.0] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+        in wrapTransform [23.0, isx, isy, isz, min_s, 0.0, 0.0, 0.0] innerShape
 
     Repeat ex ey ez innerShape ->
         let cx = evalExpr env ex; cy = evalExpr env ey; cz = evalExpr env ez
-        in [26.0, cx, cy, cz] ++ compileShape env mat innerShape ++ [25.0, 0.0, 0.0, 0.0]
+        in wrapTransform [26.0, cx, cy, cz] innerShape
 
     -- Color Ops
     Paint cName innerShapes ->
-        let rgb = resolveColor cName
-        in [30.0] ++ rgb ++ compileGroup env mat innerShapes ++ [31.0, 0.0, 0.0, 0.0]
-        
+        let (code, depth) = compileGroupD env mat innerShapes
+        in if null code
+            then ([], 0) -- nothing to paint: don't emit an empty push/pop
+            else ([30.0] ++ resolveColor cName ++ code ++ [31.0, 0.0, 0.0, 0.0], depth)
+
     Material mName innerShapes ->
-        let newMat = resolveMaterial mName
-        in compileGroup env newMat innerShapes
-        
-    Group shapes -> 
-        compileGroup env mat shapes
-        
+        compileGroupD env (resolveMaterial mName) innerShapes
+
+    Group shapes ->
+        compileGroupD env mat shapes
+
     ShapeRef name ->
         case Map.lookup name env of
-            Just (VShape s) -> compileShape env mat s
-            _ -> []
+            Just (VShape s) -> go s
+            _ -> ([], 0)
+  where
+    go = compileShapeD env mat
+    wrapTransform header innerShape =
+        let (code, depth) = go innerShape
+        in (header ++ code ++ [25.0, 0.0, 0.0, 0.0], depth)
 
+-- | Emit `first`, then `second`, then a binary CSG op. While `second` is
+--   being evaluated, `first`'s result occupies one stack slot.
+emitBinary :: Float -> Compiled -> Compiled -> Compiled
+emitBinary op (c1, d1) (c2, d2) = (c1 ++ c2 ++ [op, 0.0, 0.0, 0.0], max d1 (d2 + 1))
 
--- Helper for evaluating lists of shapes
-compileGroup :: Env -> Float -> [Shape] -> [Float]
-compileGroup _ _ [] = []
-compileGroup env mat [s] = compileShape env mat s
-compileGroup env mat (s:ss) = 
-    compileGroup env mat ss ++ compileShape env mat s ++ [10.0, 0.0, 0.0, 0.0]
+-- | For commutative ops, evaluate the deeper operand first (Sethi-Ullman
+--   ordering). Without this, a chain like `a = union(a, x)` repeated N times
+--   needs N stack slots; with it, it needs 2. Ties keep the historical
+--   operand order so existing bytecode is unchanged.
+emitCommutative :: Float -> Compiled -> Compiled -> Compiled
+emitCommutative op a b
+    | snd a > snd b = emitBinary op a b
+    | otherwise     = emitBinary op b a
+
+-- | Union a list of shapes together. Members that compile to nothing (e.g.
+--   an empty nested group) are skipped, so they can't leave the union with
+--   a missing operand.
+compileGroupD :: Env -> Float -> [Shape] -> Compiled
+compileGroupD env mat shapes =
+    case filter (not . null . fst) (map (compileShapeD env mat) shapes) of
+        []     -> ([], 0)
+        -- On ties the rest of the group is pushed first (historical order).
+        pieces -> foldr1 (emitCommutative 10.0) pieces
 
 -- | ENTRY POINT
 --   defaultColor sets the colour drawn shapes get when they aren't

@@ -5,6 +5,21 @@ import qualified Data.Map as Map
 import AST
 import Evaluator
 
+-- | Walk bytecode the same way the viewer does and report the deepest the
+--   hit stack gets (primitives push, CSG ops pop two and push one).
+peakStackDepth :: [Float] -> Int
+peakStackDepth = go 0 0
+  where
+    go :: Int -> Int -> [Float] -> Int
+    go _ peak [] = peak
+    go sp peak code@(op:_) = case (round op :: Int) of
+        0 -> peak
+        n | n `elem` [1, 3, 5]   -> go (sp + 1) (max peak (sp + 1)) (drop 4 code)
+          | n `elem` [2, 4]      -> go (sp + 1) (max peak (sp + 1)) (drop 8 code)
+          | n `elem` [10, 11, 12] -> go (sp - 1) peak (drop 4 code)
+          | n == 23              -> go sp peak (drop 8 code)
+          | otherwise            -> go sp peak (drop 4 code)
+
 spec :: Spec
 spec = do
     describe "evalExpr" $ do
@@ -149,6 +164,31 @@ spec = do
                 , Draw (ShapeRef "b")
                 ]
                 `shouldBe` [30.0, 0.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0, 31.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        it "keeps a long `a = union(a, x)` chain at stack depth 2" $
+            -- Each stack slot is a GLSL register in the viewer; before
+            -- Sethi-Ullman ordering this chain needed 41 slots and the
+            -- viewer rejected the shader.
+            let chain = AssignShape "a" (Sphere (Lit 1))
+                      : replicate 40 (AssignShape "a" (Union (ShapeRef "a") (Cube (Lit 1) (Lit 1) (Lit 1))))
+                      ++ [Draw (ShapeRef "a")]
+            in peakStackDepth (compileToBytecode (0, 0, 0) chain) `shouldBe` 2
+
+        it "keeps difference operand order even when the first operand is deeper" $
+            -- difference(a, b) must still push b first, then a.
+            let deep = Union (Sphere (Lit 1)) (Sphere (Lit 2))
+            in compileShape Map.empty 0.0 (Difference deep (Sphere (Lit 3)))
+                `shouldBe` [ 1.0, 3.0, 0.0, 0.0
+                           , 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0
+                           , 11.0, 0.0, 0.0, 0.0 ]
+
+        it "skips empty members of a group instead of emitting a dangling union" $
+            compileShape Map.empty 0.0 (Group [Group [], Sphere (Lit 1)])
+                `shouldBe` [1.0, 1.0, 0.0, 0.0]
+
+        it "emits nothing for a paint with no geometry, so the draw is skipped" $
+            compileToBytecode (0, 0, 0) [Draw (Paint "red" [Group []])]
+                `shouldBe` [0.0, 0.0, 0.0, 0.0]
 
     describe "validateScript" $ do
         it "accepts a script whose references are all defined" $

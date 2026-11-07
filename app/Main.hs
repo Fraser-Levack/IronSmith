@@ -53,7 +53,7 @@ main = do
             _ <- compileAndSave (cfgDefaultObjectColor cfg) True code
             return ()
         else do
-            _ <- compileAndSave (cfgDefaultObjectColor cfg) True "torus(4, 1, 32)"
+            _ <- compileAndSave (cfgDefaultObjectColor cfg) True "torus(4, 1)"
             return ()
     
     h <- launchViewer

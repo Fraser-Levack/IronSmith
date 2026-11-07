@@ -56,19 +56,23 @@ vec3 opRep(vec3 p, vec3 c) {
 }
 
 Hit map(vec3 p) {
-    Hit s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15;
-    vec3 p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
-    float sc0, sc1, sc2, sc3, sc4, sc5, sc6, sc7, sc8, sc9, sc10, sc11, sc12, sc13, sc14, sc15;
-    vec3 c0, c1, c2, c3, c4, c5, c6, c7;
-    
     vec3 current_p = p; float current_scale = 1.0; vec3 current_col = vec3(0.8, 0.4, 0.1);
 
     {GENERATED_BODY}
 }
 
 vec3 calcNormal(vec3 p) {
-    vec2 e = vec2(1.0, -1.0) * 0.0005;
-    return normalize(e.xyy * map(p + e.xyy).d + e.yyx * map(p + e.yyx).d + e.yxy * map(p + e.yxy).d + e.xxx * map(p + e.xxx).d);
+    // Tetrahedral normal sampled in a loop whose start the compiler can't
+    // prove is 0, so it can't unroll the loop and inline the (potentially
+    // huge) generated map() four times. Unrolled, a 250-draw scene took
+    // the AMD Vulkan driver >2 minutes to compile; looped, ~2.6s.
+    int ZERO = min(int(u_time), 0);
+    vec3 n = vec3(0.0);
+    for (int i = ZERO; i < 4; i++) {
+        vec3 e = 0.5773 * (2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0);
+        n += e * map(p + 0.0005 * e).d;
+    }
+    return normalize(n);
 }
 
 float calcShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
@@ -211,6 +215,13 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
     let mut tsp: i32 = 0;
     let mut csp: i32 = 0;
 
+    // Peak depth of each stack: every slot ever used becomes a declared
+    // GLSL register. Tracking the peak (not the final depth) is what keeps
+    // deep scenes from referencing undeclared variables.
+    let mut max_sp: i32 = 0;
+    let mut max_tsp: i32 = 0;
+    let mut max_csp: i32 = 0;
+
     while pc < bytecode.len() {
         let iop = bytecode[pc] as i32;
 
@@ -220,6 +231,13 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
                 tsp, tsp
             ));
             tsp += 1;
+        }
+
+        // Stride check: a truncated instruction at the end of the buffer
+        // would otherwise index out of bounds below.
+        let width = if matches!(iop, 2 | 4 | 23) { 8 } else { 4 };
+        if iop != 0 && pc + width > bytecode.len() {
+            return Err(format!("truncated instruction {} at offset {}", iop, pc));
         }
 
         match iop {
@@ -363,14 +381,19 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
                 pc += 4;
             }
         }
+
+        max_sp = max_sp.max(sp);
+        max_tsp = max_tsp.max(tsp);
+        max_csp = max_csp.max(csp);
     }
 
-    // The register file only has 16 slots of each kind; overflowing them
-    // would generate GLSL that references undeclared variables.
-    if sp > 16 || tsp > 16 || csp > 8 {
+    // Sanity cap: legitimate scenes stay far below this (the Haskell
+    // compiler orders commutative ops to keep the hit stack shallow), and a
+    // shader with thousands of live registers would only stall the driver.
+    if max_sp > MAX_REGISTERS || max_tsp > MAX_REGISTERS || max_csp > MAX_REGISTERS {
         return Err(format!(
-            "scene too complex: {} shapes, {} transforms, {} colors on the stack",
-            sp, tsp, csp
+            "scene too deeply nested: {} shapes, {} transforms, {} colors on the stack at once (limit {})",
+            max_sp, max_tsp, max_csp, MAX_REGISTERS
         ));
     }
 
@@ -380,7 +403,34 @@ pub fn generate_shader_body(bytecode: &[f32]) -> Result<String, String> {
         body.push_str("    return Hit(999999.0, vec3(0.0), 0);\n");
     }
 
-    Ok(body)
+    let mut decls = String::new();
+    declare_registers(&mut decls, "Hit", "s", max_sp);
+    declare_registers(&mut decls, "vec3", "p", max_tsp);
+    declare_registers(&mut decls, "float", "sc", max_tsp);
+    declare_registers(&mut decls, "vec3", "c", max_csp);
+    decls.push_str(&body);
+
+    Ok(decls)
+}
+
+/// Upper bound on any one register stack's depth in a generated shader.
+const MAX_REGISTERS: i32 = 256;
+
+/// Append `ty prefix0, prefix1, ...;` for `count` registers (nothing if 0).
+fn declare_registers(out: &mut String, ty: &str, prefix: &str, count: i32) {
+    if count > 0 {
+        let names: Vec<String> = (0..count).map(|i| format!("{}{}", prefix, i)).collect();
+        out.push_str(&format!("{} {};\n", ty, names.join(", ")));
+    }
+}
+
+/// Build the complete scene fragment shader for a bytecode program.
+pub fn build_scene_source(bytecode: &[f32]) -> Result<String, String> {
+    let body = generate_shader_body(bytecode)?;
+    let light_setup = extract_light_setup(bytecode);
+    Ok(SHADER_TEMPLATE
+        .replace("{GENERATED_BODY}", &body)
+        .replace("{LIGHT_SETUP}", &light_setup))
 }
 
 /// Parse and validate GLSL into naga IR without touching wgpu, so syntax
@@ -465,37 +515,52 @@ pub fn build_pipeline_checked(
     }
 }
 
-pub fn compile_pipeline_async(
-    device: Arc<wgpu::Device>,         // Changed to Arc
-    layout: Arc<wgpu::PipelineLayout>, // Changed to Arc
+/// Start the background scene compiler and return the queue that feeds it.
+///
+/// A single long-lived worker compiles scenes one at a time. Before each
+/// compile it drains the queue and keeps only the newest bytecode, so edits
+/// made while a slow driver compile is running collapse into one follow-up
+/// compile instead of piling up as parallel threads. Because compiles are
+/// sequential, finished pipelines arrive on `tx` in edit order: an older,
+/// slower compile can never replace a newer scene.
+pub fn spawn_scene_compiler(
+    device: Arc<wgpu::Device>,
+    layout: Arc<wgpu::PipelineLayout>,
     format: wgpu::TextureFormat,
-    bytecode: Vec<f32>,
     tx: mpsc::Sender<wgpu::RenderPipeline>,
     log_path: PathBuf,
-) {
-    std::thread::spawn(move || {
-        let body = match generate_shader_body(&bytecode) {
-            Ok(body) => body,
-            Err(e) => {
-                log_line(
-                    &log_path,
-                    &format!("Scene rejected (malformed bytecode): {}", e),
-                );
-                return;
-            }
-        };
-        let light_setup = extract_light_setup(&bytecode);
-        let full_source = SHADER_TEMPLATE
-            .replace("{GENERATED_BODY}", &body)
-            .replace("{LIGHT_SETUP}", &light_setup);
+) -> mpsc::Sender<Vec<f32>> {
+    let (job_tx, job_rx) = mpsc::channel::<Vec<f32>>();
 
-        match build_pipeline_checked(&device, &layout, format, "IronSmith Scene", &full_source) {
-            Ok(pipeline) => {
-                let _ = tx.send(pipeline);
+    std::thread::spawn(move || {
+        while let Ok(mut bytecode) = job_rx.recv() {
+            while let Ok(newer) = job_rx.try_recv() {
+                bytecode = newer;
             }
-            Err(e) => log_line(&log_path, &format!("Scene shader rejected: {}", e)),
+
+            let source = match build_scene_source(&bytecode) {
+                Ok(source) => source,
+                Err(e) => {
+                    log_line(
+                        &log_path,
+                        &format!("Scene rejected (malformed bytecode): {}", e),
+                    );
+                    continue;
+                }
+            };
+
+            match build_pipeline_checked(&device, &layout, format, "IronSmith Scene", &source) {
+                Ok(pipeline) => {
+                    if tx.send(pipeline).is_err() {
+                        break; // renderer is gone
+                    }
+                }
+                Err(e) => log_line(&log_path, &format!("Scene shader rejected: {}", e)),
+            }
         }
     });
+
+    job_tx
 }
 
 #[cfg(test)]
@@ -563,6 +628,62 @@ mod tests {
     fn unbalanced_pops_error_instead_of_panicking() {
         assert!(generate_shader_body(&[25.0, 0.0, 0.0, 0.0]).is_err());
         assert!(generate_shader_body(&[31.0, 0.0, 0.0, 0.0]).is_err());
+    }
+
+    /// Bytecode for `n` spheres pushed one after another, then joined by
+    /// n-1 unions: the hit stack peaks at depth `n`.
+    fn stacked_spheres(n: usize) -> Vec<f32> {
+        let mut bc = Vec::new();
+        for i in 0..n {
+            bc.extend_from_slice(&[1.0, 1.0 + i as f32, 0.0, 0.0]);
+        }
+        for _ in 1..n {
+            bc.extend_from_slice(&[10.0, 0.0, 0.0, 0.0]);
+        }
+        bc
+    }
+
+    #[test]
+    fn full_scene_shader_validates() {
+        // Covers the template itself (including the looped calcNormal).
+        let source = build_scene_source(&[1.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        parse_glsl_fragment(&source).unwrap();
+    }
+
+    #[test]
+    fn deep_hit_stack_declares_every_register_it_uses() {
+        // Peaks at 20 live shapes. The old fixed s0..s15 register file
+        // only checked the *final* depth, so this produced GLSL using an
+        // undeclared `s16` and the scene was silently rejected.
+        let source = build_scene_source(&stacked_spheres(20)).unwrap();
+        assert!(source.contains("s19"));
+        parse_glsl_fragment(&source).unwrap();
+    }
+
+    #[test]
+    fn deep_transform_nesting_validates() {
+        // 20 nested move(...)s around a sphere.
+        let mut bc = Vec::new();
+        for _ in 0..20 {
+            bc.extend_from_slice(&[24.0, 1.0, 0.0, 0.0]);
+        }
+        bc.extend_from_slice(&[1.0, 1.0, 0.0, 0.0]);
+        for _ in 0..20 {
+            bc.extend_from_slice(&[25.0, 0.0, 0.0, 0.0]);
+        }
+        let source = build_scene_source(&bc).unwrap();
+        parse_glsl_fragment(&source).unwrap();
+    }
+
+    #[test]
+    fn absurdly_deep_stack_is_rejected() {
+        assert!(generate_shader_body(&stacked_spheres(MAX_REGISTERS as usize + 1)).is_err());
+    }
+
+    #[test]
+    fn truncated_instruction_errors_instead_of_panicking() {
+        // A box needs 8 floats; only 4 arrived.
+        assert!(generate_shader_body(&[2.0, 1.0, 1.0, 1.0]).is_err());
     }
 
     #[test]

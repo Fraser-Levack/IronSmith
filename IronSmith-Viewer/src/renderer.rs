@@ -39,7 +39,6 @@ pub struct Renderer<'a> {
     pub size: winit::dpi::PhysicalSize<u32>,
 
     render_pipeline: wgpu::RenderPipeline,
-    pipeline_layout: Arc<wgpu::PipelineLayout>, // Wrapped in Arc
 
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -47,8 +46,10 @@ pub struct Renderer<'a> {
     start_time: Instant,
     log_path: PathBuf,
 
+    /// Finished scene pipelines, in edit order (see `spawn_scene_compiler`).
     pipeline_rx: mpsc::Receiver<wgpu::RenderPipeline>,
-    pipeline_tx: mpsc::Sender<wgpu::RenderPipeline>,
+    /// Bytecode queue feeding the background scene compiler.
+    scene_jobs: mpsc::Sender<Vec<f32>>,
 
     // Filter pass: the scene renders into `scene_view`, then the filter
     // pipeline samples it and writes the final image to the swapchain.
@@ -198,14 +199,16 @@ impl Renderer<'_> {
 
         let (pipeline_tx, pipeline_rx) = mpsc::channel();
 
-        shader::compile_pipeline_async(
+        let scene_jobs = shader::spawn_scene_compiler(
             device.clone(),
-            pipeline_layout.clone(),
+            pipeline_layout,
             SCENE_FORMAT,
-            vec![0.0],
-            pipeline_tx.clone(),
+            pipeline_tx,
             log_path.clone(),
         );
+        scene_jobs
+            .send(vec![0.0])
+            .expect("Scene compiler thread failed to start");
 
         let render_pipeline = pipeline_rx
             .recv()
@@ -289,14 +292,13 @@ impl Renderer<'_> {
             config,
             size,
             render_pipeline,
-            pipeline_layout,
             uniform_buffer,
             bind_group,
             uniforms,
             start_time: Instant::now(),
             log_path,
             pipeline_rx,
-            pipeline_tx,
+            scene_jobs,
             scene_view,
             scene_sampler,
             filter_bind_group_layout,
@@ -342,7 +344,8 @@ impl Renderer<'_> {
         let t = self.start_time.elapsed().as_secs_f32();
         self.write_uniforms_at(camera, t, self.size.width, self.size.height);
 
-        if let Ok(new_pipeline) = self.pipeline_rx.try_recv() {
+        // Pipelines arrive in edit order, so the last one queued is newest.
+        while let Ok(new_pipeline) = self.pipeline_rx.try_recv() {
             self.render_pipeline = new_pipeline;
         }
 
@@ -352,14 +355,9 @@ impl Renderer<'_> {
     }
 
     pub fn update_scene(&mut self, bytecode: Vec<f32>) {
-        shader::compile_pipeline_async(
-            self.device.clone(),
-            self.pipeline_layout.clone(),
-            SCENE_FORMAT,
-            bytecode,
-            self.pipeline_tx.clone(),
-            self.log_path.clone(),
-        );
+        if self.scene_jobs.send(bytecode).is_err() {
+            self.log_message("Scene compiler thread has stopped; scene not updated");
+        }
     }
 
     /// Swap the post-process filter. `body` is the GLSL snippet defining

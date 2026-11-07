@@ -73,28 +73,34 @@ gap = size * 2 + 1
 half = size / 2 - 1
 
 // Primitives
-cube(10, 10, 10)
-sphere(size, 16)
-cylinder(radius, definition, height)
-cone(radius, top_radius, definition, height)
-torus(radius, tube_radius, definition)
+cube(10, 10, 10)                    // width, height, depth
+sphere(size)                        // radius
+cylinder(radius, height)
+cone(radius, height)                // pointed cone
+cone(radius, top_radius, height)    // capped cone
+torus(radius, tube_radius)
 
 // Transformations
 move(x, y, z, shape)
 rotateX(degrees, shape)
 rotateY(degrees, shape)
 rotateZ(degrees, shape)
+scale(factor, shape)                // uniform
+scale(sx, sy, sz, shape)
+repeat(spacing_x, spacing_y, spacing_z, shape)  // infinite tiling; 0 = no repeat on that axis
 
-// CSG Operations (Union, Difference, Intersection)
+// CSG Operations
+union(shape_a, shape_b)
+intersection(shape_a, shape_b)
 difference(
-    cube(10, 10, 10), 
-    sphere(6, 16)
+    cube(10, 10, 10),
+    sphere(6)
 )
+group(shape_a, shape_b, shape_c)    // union of any number of shapes
 
-// Materials and Paints
-paint(color, shape) // color is a hex code (e.g., "#FF5733")
-
-material(type, shape) // type can be "metal", "plastic", "matte", "neon"
+// Materials and Paints (no quotes around colours or materials)
+paint(#FF5733, shape)               // hex code, or a preset: white, black, red, green, blue
+material(metal, shape)              // metal, plastic, matte, or neon
 
 // Lighting (optional; the last light statement wins)
 light(10, 20, 5)        // directional light shining from (10, 20, 5) toward the origin
