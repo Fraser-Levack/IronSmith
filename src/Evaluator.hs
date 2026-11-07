@@ -177,10 +177,11 @@ compileShapeD env mat shape = case shape of
         let r = evalExpr env er; tr = evalExpr env et
         in ([5.0, r, tr, mat], 1) -- 1 vec4
 
-    -- The viewer pops the top of the stack as the op's *first* argument, so
-    -- `b` is pushed first. Difference isn't commutative: its order is fixed.
+    -- CSG ops compute (first pushed) OP (top of stack) in both the viewer
+    -- and the OBJ exporter. difference(a, b) is "a with b cut out", so `a`
+    -- is pushed first; its order is fixed, unlike the commutative ops.
     Union a b        -> emitCommutative 10.0 (go a) (go b)
-    Difference a b   -> emitBinary 11.0 (go b) (go a)
+    Difference a b   -> emitBinary 11.0 (go a) (go b)
     Intersection a b -> emitCommutative 12.0 (go a) (go b)
 
     -- Transform Ops

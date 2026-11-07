@@ -1,7 +1,7 @@
 module ParserSpec (spec) where
 
 import Test.Hspec
-import Text.Megaparsec (parse)
+import Text.Megaparsec (parse, errorBundlePretty)
 import AST
 import Parser
 
@@ -10,6 +10,12 @@ parseOk :: Parser a -> String -> Maybe a
 parseOk p input = case parse p "" input of
     Left _    -> Nothing
     Right val -> Just val
+
+-- | The pretty-printed error for input that should fail to parse.
+parseErr :: Parser a -> String -> String
+parseErr p input = case parse p "" input of
+    Left bundle -> errorBundlePretty bundle
+    Right _     -> "<parsed successfully>"
 
 spec :: Spec
 spec = do
@@ -28,6 +34,15 @@ spec = do
 
         it "parses negative numbers" $
             parseOk pExpr "-5" `shouldBe` Just (Lit (-5))
+
+        it "parses unary minus on a variable" $
+            parseOk pExpr "-x" `shouldBe` Just (Sub (Lit 0) (Var "x"))
+
+        it "parses unary minus on a parenthesised expression" $
+            parseOk pExpr "-(a + 1)" `shouldBe` Just (Sub (Lit 0) (Add (Var "a") (Lit 1)))
+
+        it "parses unary minus after a binary operator" $
+            parseOk pExpr "2 * -x" `shouldBe` Just (Mul (Lit 2) (Sub (Lit 0) (Var "x")))
 
         it "parses subtraction" $
             parseOk pExpr "5 - 3" `shouldBe` Just (Sub (Lit 5) (Lit 3))
@@ -117,6 +132,26 @@ spec = do
             parseOk pShape "material(metal, sphere(1))"
                 `shouldBe` Just (Material "metal" [Sphere (Lit 1)])
 
+        it "accepts quoted colours and materials" $ do
+            parseOk pShape "paint(\"#ff00aa\", sphere(1))"
+                `shouldBe` Just (Paint "#ff00aa" [Sphere (Lit 1)])
+            parseOk pShape "material(\"metal\", sphere(1))"
+                `shouldBe` Just (Material "metal" [Sphere (Lit 1)])
+
+        it "uses a negated variable as a shape argument" $
+            parseOk pShape "move(-x, 0, 0, sphere(1))"
+                `shouldBe` Just (Move (Sub (Lit 0) (Var "x")) (Lit 0) (Lit 0) (Sphere (Lit 1)))
+
+        it "still parses both cone forms" $ do
+            parseOk pShape "cone(1, 3)" `shouldBe` Just (Cone (Lit 1) (Lit 0) (Lit 3))
+            parseOk pShape "cone(1, 0.5, 3)" `shouldBe` Just (Cone (Lit 1) (Lit 0.5) (Lit 3))
+
+        it "explains too many arguments with the correct form" $
+            parseErr pShape "sphere(6, 16)" `shouldContain` "too many arguments; expected sphere(radius)"
+
+        it "explains too few arguments with the correct form" $
+            parseErr pShape "cube(1, 2)" `shouldContain` "too few arguments; expected cube(width, height, depth)"
+
         it "parses a shape variable reference" $
             parseOk pShape "myShape" `shouldBe` Just (ShapeRef "myShape")
 
@@ -143,6 +178,35 @@ spec = do
         it "parses a light statement with explicit intensity" $
             parseOk pScript "light(10, 20, 5, 0.5)"
                 `shouldBe` Just [Light (Lit 10) (Lit 20) (Lit 5) (Lit 0.5)]
+
+        it "parses every form shown in the README syntax overview" $
+            -- Keep in sync with README.md "Language Syntax Overview" so the
+            -- docs can't drift from the parser again.
+            fmap length (parseOk pScript (unlines
+                [ "size = 2"
+                , "gap = size * 2 + 1"
+                , "a = cube(10, 10, 10)"
+                , "b = sphere(size)"
+                , "cylinder(1, 3)"
+                , "cone(1, 3)"
+                , "cone(1, 0.5, 3)"
+                , "torus(4, 1)"
+                , "move(-gap, 2, 3, rotateX(10, rotateY(20, rotateZ(30, a))))"
+                , "scale(2, b)"
+                , "scale(1, 2, 3, b)"
+                , "repeat(4, 0, 4, b)"
+                , "union(a, b)"
+                , "intersection(a, b)"
+                , "difference(cube(10, 10, 10), sphere(6))"
+                , "group(a, b, torus(4, 1))"
+                , "paint(#FF5733, a)"
+                , "paint(red, b)"
+                , "material(metal, a)"
+                , "light(10, 20, 5)"
+                , "light(10, 20, 5, 0.5)"
+                , "camera(0, 45, 20, 15)"
+                , "camera(4, 90, 20, 15, 0, 1, 0)"
+                ])) `shouldBe` Just 23
 
         it "still allows light as a variable name" $
             parseOk pScript "light = 3\nsphere(light)"

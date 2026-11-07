@@ -17,7 +17,7 @@ use winit::{
 };
 
 use camera::Camera;
-use network::NetMessage;
+use network::{Incoming, NetMessage};
 use renderer::Renderer;
 
 fn get_config_dir() -> PathBuf {
@@ -44,6 +44,57 @@ fn load_filter(name: &str) -> Option<String> {
         return None;
     }
     std::fs::read_to_string(get_filters_dir().join(format!("{}.glsl", name))).ok()
+}
+
+/// How long a screenshot request may wait for its scene to compile before
+/// the viewer gives up and replies with an error.
+const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A parsed `CMD:SCREENSHOT:<view>:<path>` request.
+///
+/// `<view>` is empty (use the live camera) or `yaw,pitch,dist,tx,ty,tz`
+/// with angles in radians, like `CMD:SET_ANIM`. `<path>` must be absolute:
+/// the viewer's working directory is not the client's.
+#[derive(Debug, PartialEq)]
+struct ScreenshotRequest {
+    view: Option<[f32; 6]>,
+    path: PathBuf,
+}
+
+fn parse_screenshot(rest: &str) -> Result<ScreenshotRequest, String> {
+    // Split on the first ':' only: Windows paths contain colons.
+    let (view_str, path_str) = rest
+        .split_once(':')
+        .ok_or("expected CMD:SCREENSHOT:<view>:<absolute path>")?;
+    let view = if view_str.trim().is_empty() {
+        None
+    } else {
+        let nums: Vec<f32> = view_str
+            .split(',')
+            .map(|v| v.trim().parse::<f32>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| format!("bad view '{}': expected 6 numbers", view_str))?;
+        let arr: [f32; 6] = nums
+            .try_into()
+            .map_err(|_| format!("bad view '{}': expected 6 numbers", view_str))?;
+        Some(arr)
+    };
+    let path = PathBuf::from(path_str.trim());
+    if !path.is_absolute() {
+        return Err(format!(
+            "screenshot path must be absolute: {}",
+            path.display()
+        ));
+    }
+    Ok(ScreenshotRequest { view, path })
+}
+
+/// A screenshot waiting for the scene generation it was requested after.
+struct PendingShot {
+    request: ScreenshotRequest,
+    stream: std::net::TcpStream,
+    generation: u64,
+    since: std::time::Instant,
 }
 
 fn setup_panic_logger() {
@@ -85,6 +136,7 @@ async fn run() -> Result<()> {
 
     let mut camera = Camera::new();
     let mut last_frame = std::time::Instant::now();
+    let mut pending_shots: Vec<PendingShot> = Vec::new();
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
@@ -102,11 +154,17 @@ async fn run() -> Result<()> {
 
                 WindowEvent::RedrawRequested => {
                     let mut latest_bytecode = None;
+                    let mut new_shots = Vec::new();
 
-                    for msg in network::drain_sockets(&listener) {
-                        match msg {
+                    for Incoming { message, stream } in network::drain_sockets(&listener) {
+                        match message {
                             NetMessage::Command(cmd) => {
-                                if let Some(name) = cmd.strip_prefix("CMD:SET_FILTER:") {
+                                if let Some(rest) = cmd.strip_prefix("CMD:SCREENSHOT:") {
+                                    match parse_screenshot(rest) {
+                                        Ok(request) => new_shots.push((request, stream)),
+                                        Err(e) => network::reply(stream, &format!("ERROR {}", e)),
+                                    }
+                                } else if let Some(name) = cmd.strip_prefix("CMD:SET_FILTER:") {
                                     match load_filter(name.trim()) {
                                         Some(body) => renderer.update_filter(body),
                                         None => renderer.log_message(&format!(
@@ -155,10 +213,50 @@ async fn run() -> Result<()> {
                         }
                     }
 
-                    // FIX: Pass ownership by removing the `&`
                     if let Some(bytecode) = latest_bytecode {
                         renderer.update_scene(bytecode);
                     }
+
+                    // Screenshots wait for the newest scene submitted so far,
+                    // which includes any bytecode that arrived just before
+                    // them in this same batch.
+                    for (request, stream) in new_shots {
+                        pending_shots.push(PendingShot {
+                            request,
+                            stream,
+                            generation: renderer.scene_generation(),
+                            since: std::time::Instant::now(),
+                        });
+                    }
+
+                    // Take ready screenshots before the live frame's
+                    // uniforms are written below, so the window never shows
+                    // the screenshot pose.
+                    let mut still_waiting = Vec::new();
+                    for shot in pending_shots.drain(..) {
+                        match renderer.scene_status(shot.generation) {
+                            None if shot.since.elapsed() < SCREENSHOT_TIMEOUT => {
+                                still_waiting.push(shot)
+                            }
+                            None => network::reply(
+                                shot.stream,
+                                "ERROR timed out waiting for the scene to compile",
+                            ),
+                            Some(Err(e)) => network::reply(shot.stream, &format!("ERROR {}", e)),
+                            Some(Ok(())) => {
+                                let mut view_cam = camera.clone();
+                                if let Some([yaw, pitch, dist, tx, ty, tz]) = shot.request.view {
+                                    view_cam.set_pose(yaw, pitch, dist, [tx, ty, tz]);
+                                }
+                                let line = match renderer.screenshot(&view_cam, &shot.request.path) {
+                                    Ok(()) => format!("OK {}", shot.request.path.display()),
+                                    Err(e) => format!("ERROR screenshot failed: {:#}", e),
+                                };
+                                network::reply(shot.stream, &line);
+                            }
+                        }
+                    }
+                    pending_shots = still_waiting;
 
                     let now = std::time::Instant::now();
                     // Clamp dt so a stall (e.g. window drag) can't make the
@@ -191,4 +289,34 @@ async fn run() -> Result<()> {
 fn main() -> Result<()> {
     setup_panic_logger();
     pollster::block_on(run())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_with_view_keeps_colons_in_path() {
+        // On Windows the temp dir starts with a drive letter ("C:..."), so
+        // this exercises splitting on the first ':' only.
+        let path = std::env::temp_dir().join("car.png");
+        let req = parse_screenshot(&format!("0.5,0.3,12,0,1.5,0:{}", path.display())).unwrap();
+        assert_eq!(req.view, Some([0.5, 0.3, 12.0, 0.0, 1.5, 0.0]));
+        assert_eq!(req.path, path);
+    }
+
+    #[test]
+    fn screenshot_without_view_uses_live_camera() {
+        let path = std::env::temp_dir().join("shot.png");
+        let req = parse_screenshot(&format!(":{}", path.display())).unwrap();
+        assert_eq!(req.view, None);
+        assert_eq!(req.path, path);
+    }
+
+    #[test]
+    fn screenshot_rejects_relative_paths_and_bad_views() {
+        assert!(parse_screenshot(":car.png").is_err());
+        assert!(parse_screenshot("1,2,3:/abs/car.png").is_err());
+        assert!(parse_screenshot("no-colon").is_err());
+    }
 }

@@ -166,6 +166,23 @@ impl VideoEncoder {
     }
 }
 
+/// Save tightly packed 8-bit RGBA pixels as a PNG (used for screenshots).
+pub fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+    let file = std::io::BufWriter::new(
+        std::fs::File::create(path).with_context(|| format!("cannot create {}", path.display()))?,
+    );
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .context("failed writing PNG header")?;
+    writer
+        .write_image_data(rgba)
+        .context("failed writing PNG data")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

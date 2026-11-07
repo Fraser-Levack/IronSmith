@@ -17,6 +17,7 @@ module Exporter
     , sdTorus
     , sdCappedCone
     , evalSDF
+    , estimateBounds
     ) where
 
 import Data.Array.Unboxed (UArray, listArray, (!), bounds, rangeSize)
@@ -306,6 +307,44 @@ estimateBoundingRadius sdf =
                    , m <- [abs x, abs y, abs z]
                    ]
     in if null extents then exportRadius else maximum extents
+
+-- | Approximate axis-aligned bounds (min corner, max corner) of a compiled
+--   scene, limited to the exporter's sampled cube. Nothing if the scene
+--   draws nothing. A coarse scan of the whole cube finds the model, then a
+--   second scan of just that region tightens the box to a few percent of
+--   the model's size. The CLI uses this to frame renders automatically.
+estimateBounds :: [Float] -> Maybe (Vec3, Vec3)
+estimateBounds [] = Nothing
+estimateBounds bytecode = do
+    let sdf = evalSDF (listArray (0, length bytecode - 1) bytecode)
+        whole = ((-exportRadius, -exportRadius, -exportRadius), (exportRadius, exportRadius, exportRadius))
+    coarse <- scanBounds sdf whole
+    scanBounds sdf (grow (scanCell whole) coarse)
+  where
+    grow d ((x0,y0,z0), (x1,y1,z1)) = ((x0-d, y0-d, z0-d), (x1+d, y1+d, z1+d))
+
+-- | Bounds of the sample points within one cell of the surface, on a
+--   'boundingScanResolution' grid spanning `box`.
+scanBounds :: (Vec3 -> Float) -> (Vec3, Vec3) -> Maybe (Vec3, Vec3)
+scanBounds sdf box@((x0,y0,z0), (x1,y1,z1)) =
+    case near of
+        [] -> Nothing
+        _  -> Just ( (minimum xs, minimum ys, minimum zs)
+                   , (maximum xs, maximum ys, maximum zs) )
+  where
+    res = boundingScanResolution
+    cell = scanCell box
+    axis lo hi = [lo + (hi - lo) * fromIntegral i / fromIntegral res | i <- [0..res]]
+    near = [ (x,y,z) | x <- axis x0 x1, y <- axis y0 y1, z <- axis z0 z1
+                     , sdf (x,y,z) <= cell ]
+    xs = [x | (x,_,_) <- near]
+    ys = [y | (_,y,_) <- near]
+    zs = [z | (_,_,z) <- near]
+
+-- | Grid spacing along the box's longest side.
+scanCell :: (Vec3, Vec3) -> Float
+scanCell ((x0,y0,z0), (x1,y1,z1)) =
+    maximum [x1 - x0, y1 - y0, z1 - z0] / fromIntegral boundingScanResolution
 
 -- | Compile the scene's bytecode into a mesh and stream it to `path` as a
 --   Wavefront .obj file, sampling `res` grid cells per axis. Calls `report`

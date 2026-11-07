@@ -15,7 +15,8 @@ executable ironsmith
                       AppState,
                       AppCore,
                       AppUI,
-                      AppEvents
+                      AppEvents,
+                      Cli
 
     hs-source-dirs:   app, src
     default-language: Haskell2010

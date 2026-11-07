@@ -60,3 +60,18 @@ spec = do
             length faceLines `shouldSatisfy` (> 0)
 
             removeFile path
+
+    describe "estimateBounds" $ do
+        it "finds an offset box to within a fraction of a unit" $ do
+            -- move(2, 3, 0, cube(2, 4, 6)): spans x 1..3, y 1..5, z -3..3
+            let bc = compileToBytecode (0, 0, 0)
+                        [Draw (Move (Lit 2) (Lit 3) (Lit 0) (Cube (Lit 2) (Lit 4) (Lit 6)))]
+                close a b = abs (a - b) < 0.5
+            case estimateBounds bc of
+                Nothing -> expectationFailure "expected bounds"
+                Just ((x0, y0, z0), (x1, y1, z1)) ->
+                    [close x0 1, close y0 1, close z0 (-3), close x1 3, close y1 5, close z1 3]
+                        `shouldBe` replicate 6 True
+
+        it "returns Nothing for an empty scene" $
+            estimateBounds (compileToBytecode (0, 0, 0) []) `shouldBe` Nothing

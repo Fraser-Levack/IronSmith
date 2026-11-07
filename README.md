@@ -71,6 +71,7 @@ size = 5
 // (* and / bind tighter than + and -, all left-associative)
 gap = size * 2 + 1
 half = size / 2 - 1
+left = -gap                         // unary minus works on any expression
 
 // Primitives
 cube(10, 10, 10)                    // width, height, depth
@@ -92,13 +93,13 @@ repeat(spacing_x, spacing_y, spacing_z, shape)  // infinite tiling; 0 = no repea
 // CSG Operations
 union(shape_a, shape_b)
 intersection(shape_a, shape_b)
-difference(
-    cube(10, 10, 10),
+difference(                         // the first shape with the second cut out:
+    cube(10, 10, 10),               // a cube with a spherical hole
     sphere(6)
 )
 group(shape_a, shape_b, shape_c)    // union of any number of shapes
 
-// Materials and Paints (no quotes around colours or materials)
+// Materials and Paints (quotes are optional: paint("#FF5733", ...) works too)
 paint(#FF5733, shape)               // hex code, or a preset: white, black, red, green, blue
 material(metal, shape)              // metal, plastic, matte, or neon
 
@@ -114,6 +115,23 @@ camera(4, 360, 20, 25)  // a 4-second full turntable orbit
 ```
 
 Pair a dim `light(...)` with the `exposure` setting in `ironsmith.toml` (Ctrl+G) to fine-tune viewport brightness.
+
+Coordinates: **Y is up**. `cube` takes full sizes (not half-extents), and `cylinder`, `cone` and `torus` are built around the Y axis (wrap them in `rotateX(90, ...)` to lay them along Z).
+
+> **Upgrading from 0.x:** `difference(a, b)` used to mean "b minus a". In 1.0 it means "a minus b", like other CSG tools. Run `python scripts/migrate_difference.py model.irsm [more.irsm ...]` to swap the arguments in existing models (each original is kept as a `.bak`); migrated models render exactly as before.
+
+## 🤖 Command Line & AI Agents
+
+The `ironsmith` binary doubles as a headless CLI, so scripts and AI agents (Claude Code, Codex, ...) can build models from a plain-text description and check their own work:
+
+```bash
+ironsmith check  car.irsm                       # validate: prints OK, or file:line: error
+ironsmith render car.irsm -o car.png            # render a still in the viewer (auto-framed)
+ironsmith render car.irsm --view -135,20,11     # yaw,pitch,dist in degrees [,x,y,z target]
+ironsmith export car.irsm -o car.obj --res 128  # mesh export
+```
+
+`render` starts the viewer if needed and leaves it open, so repeated renders take a fraction of a second. Exit codes: `0` ok, `1` script error, `2` bad usage, `3` viewer/IO failure. See [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) for the agent workflow and modelling tips.
 
 ## 🎬 Animation & Video Export
 

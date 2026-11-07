@@ -515,47 +515,58 @@ pub fn build_pipeline_checked(
     }
 }
 
+/// The outcome of compiling a scene. `generation` is the newest scene
+/// request this result covers (older queued requests it superseded are
+/// covered too), so callers waiting on generation N can treat any result
+/// with generation >= N as "your scene is done".
+pub struct SceneResult {
+    pub generation: u64,
+    pub pipeline: Result<wgpu::RenderPipeline, String>,
+}
+
 /// Start the background scene compiler and return the queue that feeds it.
+/// Jobs are `(generation, bytecode)`, with generations increasing.
 ///
 /// A single long-lived worker compiles scenes one at a time. Before each
 /// compile it drains the queue and keeps only the newest bytecode, so edits
 /// made while a slow driver compile is running collapse into one follow-up
 /// compile instead of piling up as parallel threads. Because compiles are
-/// sequential, finished pipelines arrive on `tx` in edit order: an older,
-/// slower compile can never replace a newer scene.
+/// sequential, results arrive on `tx` in edit order: an older, slower
+/// compile can never replace a newer scene.
 pub fn spawn_scene_compiler(
     device: Arc<wgpu::Device>,
     layout: Arc<wgpu::PipelineLayout>,
     format: wgpu::TextureFormat,
-    tx: mpsc::Sender<wgpu::RenderPipeline>,
+    tx: mpsc::Sender<SceneResult>,
     log_path: PathBuf,
-) -> mpsc::Sender<Vec<f32>> {
-    let (job_tx, job_rx) = mpsc::channel::<Vec<f32>>();
+) -> mpsc::Sender<(u64, Vec<f32>)> {
+    let (job_tx, job_rx) = mpsc::channel::<(u64, Vec<f32>)>();
 
     std::thread::spawn(move || {
-        while let Ok(mut bytecode) = job_rx.recv() {
+        while let Ok(mut job) = job_rx.recv() {
             while let Ok(newer) = job_rx.try_recv() {
-                bytecode = newer;
+                job = newer;
+            }
+            let (generation, bytecode) = job;
+
+            let pipeline = build_scene_source(&bytecode)
+                .map_err(|e| format!("Scene rejected (malformed bytecode): {}", e))
+                .and_then(|source| {
+                    build_pipeline_checked(&device, &layout, format, "IronSmith Scene", &source)
+                        .map_err(|e| format!("Scene shader rejected: {}", e))
+                });
+            if let Err(e) = &pipeline {
+                log_line(&log_path, e);
             }
 
-            let source = match build_scene_source(&bytecode) {
-                Ok(source) => source,
-                Err(e) => {
-                    log_line(
-                        &log_path,
-                        &format!("Scene rejected (malformed bytecode): {}", e),
-                    );
-                    continue;
-                }
-            };
-
-            match build_pipeline_checked(&device, &layout, format, "IronSmith Scene", &source) {
-                Ok(pipeline) => {
-                    if tx.send(pipeline).is_err() {
-                        break; // renderer is gone
-                    }
-                }
-                Err(e) => log_line(&log_path, &format!("Scene shader rejected: {}", e)),
+            if tx
+                .send(SceneResult {
+                    generation,
+                    pipeline,
+                })
+                .is_err()
+            {
+                break; // renderer is gone
             }
         }
     });

@@ -9,6 +9,7 @@ pub struct CamKey {
     pub pan: [f32; 3],
 }
 
+#[derive(Clone)]
 pub struct Camera {
     pub yaw: f32,
     pub pitch: f32,
@@ -63,6 +64,19 @@ impl Camera {
             march_steps: 150,
             exposure: 1.0,
         }
+    }
+
+    /// Jump straight to a pose (radians), with no easing. Used for one-off
+    /// screenshot cameras.
+    pub fn set_pose(&mut self, yaw: f32, pitch: f32, dist: f32, target: [f32; 3]) {
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.dist = dist;
+        [self.pan_x, self.pan_y, self.pan_z] = target;
+        self.target_yaw = yaw;
+        self.target_pitch = pitch;
+        self.target_dist = dist;
+        [self.target_pan_x, self.target_pan_y, self.target_pan_z] = target;
     }
 
     pub fn process_command(&mut self, cmd: &str) {

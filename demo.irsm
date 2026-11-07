@@ -1,18 +1,77 @@
+// irsm 1.0: difference(a, b) = a minus b
+// IronSmith demo: a castle rampart with two turrets and a gatehouse.
+// The wall runs along X, its front faces +Z, the ground is y = 0.
+
+// ── Dimensions ────────────────────────────────────────
+span = 20          // distance between the turret centres
+wallH = 6
+wallT = 2          // wall thickness
+towerR = 2.4
+towerH = 11
+gateW = 3
+gateH = 3.5
+
+// ── Battlements: a row of merlons clipped to a length ─
+merlons = repeat(2, 0, 0, cube(1, 1, wallT + 0.2))
+battlement = intersection(merlons, cube(span - 2 * towerR, 1, wallT + 0.2))
+
+// ── Curtain wall with an arched gateway ───────────────
+gateway = group(
+    move(0, gateH / 2, 0, cube(gateW, gateH, wallT + 4)),
+    move(0, gateH, 0, rotateX(90, cylinder(gateW / 2, wallT + 4)))
+)
+wall = group(
+    move(0, wallH / 2, 0, cube(span, wallH, wallT)),
+    move(0, wallH + 0.5, 0, battlement)
+)
+
+// ── Gatehouse: a taller block around the gate ─────────
+gatehouse = group(
+    move(0, (wallH + 2) / 2, 0, cube(gateW + 3, wallH + 2, wallT + 1)),
+    move(0, wallH + 2.5, 0, intersection(repeat(2, 0, 0, cube(1, 1, wallT + 1.2)), cube(gateW + 3, 1, wallT + 1.2)))
+)
+
+// ── Turret: a round tower with a crenellated, hollow top
+notches = group(cube(2 * towerR + 1, 1.2, 0.8), rotateY(45, cube(2 * towerR + 1, 1.2, 0.8)),
+                rotateY(90, cube(2 * towerR + 1, 1.2, 0.8)), rotateY(135, cube(2 * towerR + 1, 1.2, 0.8)))
+crown = difference(cylinder(towerR + 0.3, 1.4), group(cylinder(towerR - 0.4, 2), move(0, 0.4, 0, notches)))
 tower = group(
-move(0,4,0,intersection(repeat(2,2,2,cube(1,1,1)),difference(cube(2,2,2),cube(4,2,4))))
-
-,difference(move(0,1,0,cube(0.5,1.5,5)),difference(cube(3,9,3),cube(4,8,4)))
+    move(0, towerH / 2, 0, cylinder(towerR, towerH)),
+    move(0, towerH + 0.4, 0, crown)
 )
 
-gate = difference(group(move(2,0.8,0,cube(1,1,4)),move(-2,0.8,0,cube(1,1,4))),move(0,-1.5,0,difference(move(0,-1.1,0,cube(1.5,3,4)),cube(4,5,3))))
+// ── Build it ──────────────────────────────────────────
+castle = difference(
+    group(wall, gatehouse, move(-span / 2, 0, 0, tower), move(span / 2, 0, 0, tower)),
+    gateway
+)
+// Wooden gate set back inside the arch
+door = move(0, gateH / 2 + 1, -0.3, cube(gateW, gateH + 2, 0.3))
 
+// Arrow slits on the turrets
+slit = cube(0.3, 1.4, 0.4)
+slits = group(move(-span / 2, towerH * 0.6, towerR - 0.1, slit), move(span / 2, towerH * 0.6, towerR - 0.1, slit),
+              move(-span / 2, towerH * 0.3, towerR - 0.1, slit), move(span / 2, towerH * 0.3, towerR - 0.1, slit))
 
-castle = group (
-gate,
+// Flags
+pole = cylinder(0.08, 2.5)
+flag = cube(1.2, 0.7, 0.05)
+poles = group(move(-span / 2, towerH + 1.6, 0, pole), move(span / 2, towerH + 1.6, 0, pole))
+flags = group(move(-span / 2 + 0.6, towerH + 2.5, 0, flag), move(span / 2 + 0.6, towerH + 2.5, 0, flag))
 
-move(4,0,0,tower),
-
-move(-4,0,0,tower)
+scene = group(
+    material(matte, paint(#D9560B, castle)),
+    material(matte, paint(#4A2A12, door)),
+    paint(#2A1608, slits),
+    paint(#3A3A3A, poles),
+    paint(#C0281E, flags)
 )
 
-paint(#ef2302,castle)
+// The castle is about 14 units tall and 25 wide. Drop it so its middle
+// sits at the origin, where the editor's camera looks, then shrink it so
+// the turrets stay in frame as the camera orbits.
+lift = -6
+size = 0.75
+scale(size, move(0, lift, 0, scene))
+
+camera(0,0,0,12)

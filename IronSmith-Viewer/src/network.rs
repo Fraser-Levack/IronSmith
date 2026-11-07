@@ -1,5 +1,5 @@
-use std::io::Read;
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 pub enum NetMessage {
@@ -7,7 +7,23 @@ pub enum NetMessage {
     Bytecode(Vec<f32>),
 }
 
-pub fn drain_sockets(listener: &TcpListener) -> Vec<NetMessage> {
+/// A message plus the connection it arrived on. Most senders (the TUI)
+/// close their socket right after writing, so replies are optional: a
+/// client that wants one (the CLI's `render`) half-closes its write side
+/// and keeps reading until the viewer answers with `reply`.
+pub struct Incoming {
+    pub message: NetMessage,
+    pub stream: TcpStream,
+}
+
+/// Send a one-line reply (`OK ...` / `ERROR ...`) and close the connection.
+/// Errors are ignored: the client may not be listening.
+pub fn reply(mut stream: TcpStream, line: &str) {
+    let _ = stream.write_all(line.as_bytes());
+    let _ = stream.write_all(b"\n");
+}
+
+pub fn drain_sockets(listener: &TcpListener) -> Vec<Incoming> {
     let mut messages = Vec::new();
 
     while let Ok((mut stream, _)) = listener.accept() {
@@ -22,16 +38,26 @@ pub fn drain_sockets(listener: &TcpListener) -> Vec<NetMessage> {
         let mut buffer = Vec::new();
         let _ = stream.read_to_end(&mut buffer);
 
-        if !buffer.is_empty() {
-            if buffer.starts_with(b"CMD:") {
-                if let Ok(cmd_str) = String::from_utf8(buffer) {
-                    messages.push(NetMessage::Command(cmd_str.trim().to_string()));
-                }
-            } else if buffer.len() % 4 == 0 {
-                let floats: &[f32] = bytemuck::cast_slice(&buffer);
-                messages.push(NetMessage::Bytecode(floats.to_vec()));
-            }
+        if buffer.is_empty() {
+            continue;
         }
+        let message = if buffer.starts_with(b"CMD:") {
+            match String::from_utf8(buffer) {
+                Ok(cmd_str) => NetMessage::Command(cmd_str.trim().to_string()),
+                Err(_) => continue,
+            }
+        } else if buffer.len() % 4 == 0 {
+            // Decode explicitly: bytemuck::cast_slice would panic (= abort
+            // in release) if the Vec<u8> allocation weren't 4-byte aligned.
+            let floats = buffer
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            NetMessage::Bytecode(floats)
+        } else {
+            continue;
+        };
+        messages.push(Incoming { message, stream });
     }
     messages
 }

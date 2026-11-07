@@ -46,10 +46,16 @@ pub struct Renderer<'a> {
     start_time: Instant,
     log_path: PathBuf,
 
-    /// Finished scene pipelines, in edit order (see `spawn_scene_compiler`).
-    pipeline_rx: mpsc::Receiver<wgpu::RenderPipeline>,
-    /// Bytecode queue feeding the background scene compiler.
-    scene_jobs: mpsc::Sender<Vec<f32>>,
+    /// Finished scene compiles, in edit order (see `spawn_scene_compiler`).
+    pipeline_rx: mpsc::Receiver<shader::SceneResult>,
+    /// `(generation, bytecode)` queue feeding the background scene compiler.
+    scene_jobs: mpsc::Sender<(u64, Vec<f32>)>,
+    /// Generation of the most recently submitted scene.
+    submitted_generation: u64,
+    /// Newest generation whose compile has finished, and its error if it
+    /// failed (the previous working pipeline stays active in that case).
+    completed_generation: u64,
+    last_scene_error: Option<String>,
 
     // Filter pass: the scene renders into `scene_view`, then the filter
     // pipeline samples it and writes the final image to the swapchain.
@@ -207,12 +213,14 @@ impl Renderer<'_> {
             log_path.clone(),
         );
         scene_jobs
-            .send(vec![0.0])
+            .send((0, vec![0.0]))
             .expect("Scene compiler thread failed to start");
 
         let render_pipeline = pipeline_rx
             .recv()
-            .expect("Initial shader compilation failed");
+            .expect("Scene compiler thread stopped")
+            .pipeline
+            .map_err(|e| anyhow::anyhow!("Initial shader compilation failed: {}", e))?;
 
         // ── Filter pass setup ────────────────────────────────────────────
         let scene_view = create_scene_view(&device, size.width, size.height);
@@ -299,6 +307,9 @@ impl Renderer<'_> {
             log_path,
             pipeline_rx,
             scene_jobs,
+            submitted_generation: 0,
+            completed_generation: 0,
+            last_scene_error: None,
             scene_view,
             scene_sampler,
             filter_bind_group_layout,
@@ -344,9 +355,16 @@ impl Renderer<'_> {
         let t = self.start_time.elapsed().as_secs_f32();
         self.write_uniforms_at(camera, t, self.size.width, self.size.height);
 
-        // Pipelines arrive in edit order, so the last one queued is newest.
-        while let Ok(new_pipeline) = self.pipeline_rx.try_recv() {
-            self.render_pipeline = new_pipeline;
+        // Results arrive in edit order, so the last one queued is newest.
+        while let Ok(result) = self.pipeline_rx.try_recv() {
+            self.completed_generation = result.generation;
+            match result.pipeline {
+                Ok(pipeline) => {
+                    self.render_pipeline = pipeline;
+                    self.last_scene_error = None;
+                }
+                Err(e) => self.last_scene_error = Some(e),
+            }
         }
 
         if let Ok(new_filter) = self.filter_rx.try_recv() {
@@ -355,9 +373,33 @@ impl Renderer<'_> {
     }
 
     pub fn update_scene(&mut self, bytecode: Vec<f32>) {
-        if self.scene_jobs.send(bytecode).is_err() {
+        self.submitted_generation += 1;
+        if self
+            .scene_jobs
+            .send((self.submitted_generation, bytecode))
+            .is_err()
+        {
             self.log_message("Scene compiler thread has stopped; scene not updated");
         }
+    }
+
+    /// Generation of the most recently submitted scene. A caller that wants
+    /// to act once "the scene I just sent" is live records this, then polls
+    /// `scene_status`.
+    pub fn scene_generation(&self) -> u64 {
+        self.submitted_generation
+    }
+
+    /// `None` while scene `generation` is still compiling; otherwise whether
+    /// the newest finished compile (covering it) succeeded.
+    pub fn scene_status(&self, generation: u64) -> Option<Result<(), String>> {
+        if self.completed_generation < generation {
+            return None;
+        }
+        Some(match &self.last_scene_error {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        })
     }
 
     /// Swap the post-process filter. `body` is the GLSL snippet defining
@@ -481,13 +523,8 @@ impl Renderer<'_> {
         let fps = fps.clamp(1, 120);
         let total_frames = ((duration * fps as f32).round() as u32).max(1);
 
-        let pixel_format = match self.config.format {
-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
-                video::PixelFormat::Bgra
-            }
-            _ => video::PixelFormat::Rgba,
-        };
-        let mut sink = video::VideoEncoder::new(base_path, width, height, fps, pixel_format)?;
+        let mut sink =
+            video::VideoEncoder::new(base_path, width, height, fps, self.pixel_format())?;
         self.log_message(&format!(
             "Video export: {} frames @ {} fps -> {}",
             total_frames,
@@ -495,10 +532,63 @@ impl Renderer<'_> {
             sink.path().display()
         ));
 
+        let capture = self.create_frame_capture("Video Export");
+        let mut frame_pixels = vec![0u8; (width * height * 4) as usize];
+
+        for i in 0..total_frames {
+            let t = i as f32 / fps as f32;
+            camera.apply_anim(t);
+            self.write_uniforms_at(camera, t, width, height);
+            self.capture_frame(&capture, &mut frame_pixels)?;
+            sink.write_frame(&mut frame_pixels)?;
+            progress(i + 1, total_frames);
+        }
+
+        let path = sink.finish()?;
+        self.log_message(&format!("Video export finished: {}", path.display()));
+        Ok(path)
+    }
+
+    /// Channel order of pixels read back from the swapchain-format texture.
+    fn pixel_format(&self) -> video::PixelFormat {
+        match self.config.format {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
+                video::PixelFormat::Bgra
+            }
+            _ => video::PixelFormat::Rgba,
+        }
+    }
+
+    /// Render the scene once from `camera` (a one-off pose; the live camera
+    /// is untouched) and save it as a PNG at the window's resolution.
+    pub fn screenshot(&mut self, camera: &Camera, path: &std::path::Path) -> Result<()> {
+        let capture = self.create_frame_capture("Screenshot");
+        let (width, height) = (capture.width, capture.height);
+        let t = self.start_time.elapsed().as_secs_f32();
+        self.write_uniforms_at(camera, t, width, height);
+
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        self.capture_frame(&capture, &mut pixels)?;
+        if self.pixel_format() == video::PixelFormat::Bgra {
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+        video::write_png(path, width, height, &pixels)?;
+        self.log_message(&format!("Screenshot saved: {}", path.display()));
+        Ok(())
+    }
+
+    /// Offscreen target + readback buffer sized to the window, used to pull
+    /// rendered frames back to the CPU (video export and screenshots).
+    fn create_frame_capture(&self, label: &str) -> FrameCapture {
+        let width = self.size.width.max(1);
+        let height = self.size.height.max(1);
+
         // Same format as the swapchain so the existing filter pipeline can
         // render into it, plus COPY_SRC for CPU readback.
-        let export_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Video Export Texture"),
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -511,26 +601,23 @@ impl Renderer<'_> {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let export_view = export_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Texture-to-buffer copies need bytes_per_row aligned to 256.
-        let unpadded_row = width * 4;
-        let padded_row = unpadded_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        let padded_row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Video Readback Buffer"),
+            label: Some(label),
             size: (padded_row * height) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
-        let mut frame_pixels = vec![0u8; (unpadded_row * height) as usize];
-
         // On an sRGB swapchain the shader's output (which already applies
         // its own gamma) is sRGB-*encoded* on write, so the raw bytes are
-        // brighter than what the monitor shows. Decode once so the video
-        // matches the viewport instead of being washed out.
-        let srgb_decode: Option<[u8; 256]> = if self.config.format.is_srgb() {
+        // brighter than what the monitor shows. Decode once so captures
+        // match the viewport instead of being washed out.
+        let srgb_decode = self.config.format.is_srgb().then(|| {
             let mut lut = [0u8; 256];
             for (b, out) in lut.iter_mut().enumerate() {
                 let c = b as f32 / 255.0;
@@ -541,79 +628,92 @@ impl Renderer<'_> {
                 };
                 *out = (lin * 255.0 + 0.5) as u8;
             }
-            Some(lut)
-        } else {
-            None
-        };
+            lut
+        });
 
-        for i in 0..total_frames {
-            let t = i as f32 / fps as f32;
-            camera.apply_anim(t);
-            self.write_uniforms_at(camera, t, width, height);
-
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Video Export Encoder"),
-                });
-            self.encode_passes(&mut encoder, &export_view);
-            encoder.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture {
-                    texture: &export_tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyBuffer {
-                    buffer: &readback,
-                    layout: wgpu::ImageDataLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_row),
-                        rows_per_image: Some(height),
-                    },
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(encoder.finish()));
-
-            let slice = readback.slice(..);
-            let (tx, rx) = mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| {
-                let _ = tx.send(r);
-            });
-            self.device.poll(wgpu::Maintain::Wait);
-            rx.recv()
-                .context("readback callback dropped")?
-                .context("failed to map readback buffer")?;
-            {
-                let data = slice.get_mapped_range();
-                for row in 0..height as usize {
-                    let src = row * padded_row as usize;
-                    let dst = row * unpadded_row as usize;
-                    frame_pixels[dst..dst + unpadded_row as usize]
-                        .copy_from_slice(&data[src..src + unpadded_row as usize]);
-                }
-            }
-            readback.unmap();
-
-            if let Some(lut) = &srgb_decode {
-                for px in frame_pixels.chunks_exact_mut(4) {
-                    px[0] = lut[px[0] as usize];
-                    px[1] = lut[px[1] as usize];
-                    px[2] = lut[px[2] as usize];
-                }
-            }
-
-            sink.write_frame(&mut frame_pixels)?;
-            progress(i + 1, total_frames);
+        FrameCapture {
+            texture,
+            view,
+            readback,
+            width,
+            height,
+            padded_row,
+            srgb_decode,
         }
-
-        let path = sink.finish()?;
-        self.log_message(&format!("Video export finished: {}", path.display()));
-        Ok(path)
     }
+
+    /// Render both passes with the current uniforms into `capture` and copy
+    /// the result into `out` as tightly packed 4-byte pixels (surface
+    /// channel order, see `pixel_format`). Blocks until the GPU is done.
+    fn capture_frame(&self, capture: &FrameCapture, out: &mut [u8]) -> Result<()> {
+        let (width, height) = (capture.width, capture.height);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame Capture Encoder"),
+            });
+        self.encode_passes(&mut encoder, &capture.view);
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &capture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &capture.readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(capture.padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = capture.readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .context("readback callback dropped")?
+            .context("failed to map readback buffer")?;
+        {
+            let data = slice.get_mapped_range();
+            let row_bytes = (width * 4) as usize;
+            for row in 0..height as usize {
+                let src = row * capture.padded_row as usize;
+                out[row * row_bytes..(row + 1) * row_bytes]
+                    .copy_from_slice(&data[src..src + row_bytes]);
+            }
+        }
+        capture.readback.unmap();
+
+        if let Some(lut) = &capture.srgb_decode {
+            for px in out.chunks_exact_mut(4) {
+                px[0] = lut[px[0] as usize];
+                px[1] = lut[px[1] as usize];
+                px[2] = lut[px[2] as usize];
+            }
+        }
+        Ok(())
+    }
+}
+
+/// See `Renderer::create_frame_capture`.
+struct FrameCapture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    readback: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    padded_row: u32,
+    srgb_decode: Option<[u8; 256]>,
 }

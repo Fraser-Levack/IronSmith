@@ -8,8 +8,9 @@ import System.Info (os)
 import Data.Char (isAlphaNum)
 import Data.List (nub, intercalate)
 import qualified Data.List.NonEmpty as NE
-import Control.Exception (catch, SomeException)
-import Control.Concurrent (forkIO) 
+import Control.Exception (catch, bracket, SomeException)
+import Control.Concurrent (forkIO, threadDelay)
+import System.Timeout (timeout)
 
 import Text.Megaparsec
 import Text.Megaparsec.Pos (sourceLine, unPos) 
@@ -20,10 +21,10 @@ import Evaluator
 import Exporter (exportToOBJ)
 import Config
 
-import System.Process (ProcessHandle, createProcess, proc, std_out, std_err, StdStream(CreatePipe), terminateProcess)
+import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, NoStream), terminateProcess)
 
 import Network.Socket
-import Network.Socket.ByteString (sendAll)
+import Network.Socket.ByteString (sendAll, recv)
 
 -- NEW: Binary Serialization Imports
 import Data.ByteString.Builder (floatLE, toLazyByteString)
@@ -39,21 +40,41 @@ viewerExeName
     | os == "mingw32" = "ironsmith-viewer.exe"
     | otherwise       = "ironsmith-viewer"
 
--- | Launch the Rust viewer. Looks for it alongside this executable first
---   (where the release package puts it), falling back to the system PATH
---   for development builds.
-launchViewer :: IO ProcessHandle
-launchViewer = do
+-- | Where to find the Rust viewer: alongside this executable first (where
+--   the release package puts it), falling back to the system PATH for
+--   development builds.
+viewerPath :: IO FilePath
+viewerPath = do
     exeDir <- takeDirectory <$> getExecutablePath
     let bundledPath = exeDir </> viewerExeName
     bundled <- doesFileExist bundledPath
-    let viewerPath = if bundled then bundledPath else viewerExeName
-        processConfig = (proc viewerPath [])
-            { std_out = CreatePipe
-            , std_err = CreatePipe
-            }
-    (_, _, _, handle) <- createProcess processConfig
+    return (if bundled then bundledPath else viewerExeName)
+
+-- | Launch the viewer as a child of the TUI (stopped when the TUI exits).
+launchViewer :: IO ProcessHandle
+launchViewer = do
+    path <- viewerPath
+    (_, _, _, handle) <- createProcess (proc path [])
+        { std_out = CreatePipe
+        , std_err = CreatePipe
+        }
     return handle
+
+-- | Launch a viewer that outlives this process, for the CLI: later
+--   `ironsmith render` calls then reuse the already-open window instead of
+--   paying the startup cost each time.
+launchViewerDetached :: IO ()
+launchViewerDetached = do
+    path <- viewerPath
+    _ <- createProcess (proc path [])
+        { std_in = NoStream
+        , std_out = NoStream
+        , std_err = NoStream
+        , create_group = True
+        , new_session = True     -- POSIX: survive the parent's terminal closing
+        , detach_console = True  -- Windows: no console tied to ours
+        }
+    return ()
 
 stopViewer :: Maybe ProcessHandle -> IO ()
 stopViewer Nothing = return ()
@@ -108,47 +129,92 @@ saveRecent path oldRecents = do
     writeFile cachePath (unlines newRecents)
     return newRecents
 
+-- | Bytecode as the little-endian f32 stream the viewer expects.
+bytecodeBytes :: [Float] -> C8.ByteString
+bytecodeBytes floats = BL.toStrict (toLazyByteString (mconcat (map floatLE floats)))
+
 -- | 1. SEND RAW BINARY FLOATS
 sendBytecode :: [Float] -> IO ()
-sendBytecode floats = do
-    let lazyBytes = toLazyByteString $ mconcat (map floatLE floats)
-        strictBytes = BL.toStrict lazyBytes
-    sendNetworkData strictBytes
+sendBytecode = sendNetworkData . bytecodeBytes
 
 -- | 2. SEND TEXT COMMANDS
 sendCommand :: String -> IO ()
 sendCommand cmd = do
     sendNetworkData (C8.pack cmd)
 
--- | SHARED TCP HELPER
+-- | The viewer's command socket.
+viewerAddr :: SockAddr
+viewerAddr = SockAddrInet 7878 (tupleToHostAddress (127, 0, 0, 1))
+
+-- | Run an action on a fresh connection to the viewer, always closing it.
+withViewerSocket :: (Socket -> IO a) -> IO a
+withViewerSocket act = withSocketsDo $
+    bracket (socket AF_INET Stream 0) close $ \sock -> do
+        connect sock viewerAddr
+        act sock
+
+-- | Fire-and-forget send (the TUI's path): never blocks the UI, and a
+--   viewer that isn't running is silently ignored.
 sendNetworkData :: C8.ByteString -> IO ()
 sendNetworkData bytes = do
-    _ <- forkIO $ withSocketsDo $ do
-        catch (do
-            sock <- socket AF_INET Stream 0
-            let addr = SockAddrInet 7878 (tupleToHostAddress (127, 0, 0, 1))
-            connect sock addr
-            sendAll sock bytes
-            close sock
-            ) (\(e :: SomeException) -> return ())
+    _ <- forkIO $ sendNetworkDataSync bytes `catch` \(_ :: SomeException) -> return ()
     return ()
 
+-- | Send and return once the bytes are written. Throws if the viewer is
+--   unreachable. The CLI uses this so it doesn't exit before sending.
+sendNetworkDataSync :: C8.ByteString -> IO ()
+sendNetworkDataSync bytes = withViewerSocket (`sendAll` bytes)
+
+-- | Send a command and wait (up to `seconds`) for the viewer's one-line
+--   reply ("OK ..." / "ERROR ..."). Half-closing our side tells the viewer
+--   the request is complete while keeping the connection open for the reply.
+requestViewer :: Int -> String -> IO (Either String String)
+requestViewer seconds cmd = do
+    result <- timeout (seconds * 1000000) (withViewerSocket exchange)
+        `catch` \(e :: SomeException) -> return (Just (Left ("cannot reach the viewer: " ++ show e)))
+    return $ case result of
+        Nothing    -> Left ("no reply from the viewer within " ++ show seconds ++ "s")
+        Just reply -> reply
+  where
+    exchange sock = do
+        sendAll sock (C8.pack cmd)
+        shutdown sock ShutdownSend
+        Right . trimReply . C8.unpack . C8.concat <$> recvAll sock
+    recvAll sock = do
+        piece <- recv sock 4096
+        if C8.null piece then return [] else (piece :) <$> recvAll sock
+    trimReply = reverse . dropWhile (`elem` "\r\n ") . reverse
+
+-- | Is a viewer listening right now?
+viewerReachable :: IO Bool
+viewerReachable =
+    (withViewerSocket (const (return ())) >> return True)
+        `catch` \(_ :: SomeException) -> return False
+
+-- | Poll until the viewer accepts connections, for up to `seconds`.
+waitForViewer :: Int -> IO Bool
+waitForViewer seconds = go (seconds * 10 :: Int)
+  where
+    go n = do
+        up <- viewerReachable
+        if up || n <= 0 then return up else threadDelay 100000 >> go (n - 1)
+
+-- | Commands that make the viewer look the way ironsmith.toml says
+--   (colours, shadows, quality, filter) without touching the camera.
+appearanceCommands :: IronConfig -> [String]
+appearanceCommands cfg =
+    [ bgColorToCmd (cfgBgColor cfg)
+    , if cfgShadowEnabled cfg then "CMD:SHADOW_ON" else "CMD:SHADOW_OFF"
+    , "CMD:SET_MARCH_STEPS:" ++ show (cfgMarchSteps cfg)
+    , "CMD:SET_FILTER:" ++ cfgFilter cfg
+    , "CMD:SET_EXPOSURE:" ++ show (cfgExposure cfg)
+    ]
+
 sendConfig :: IronConfig -> IO ()
-sendConfig cfg = do
-    -- Background colour
-    sendCommand (bgColorToCmd (cfgBgColor cfg))
-    -- Camera distance
-    sendCommand ("CMD:SET_CAMERA_DIST:" ++ show (cfgDefaultCameraDist cfg))
-    -- Auto orbit
-    sendCommand (if cfgAutoOrbit cfg then "CMD:OrbitMode" else "CMD:StaticMode")
-    -- Shadow toggle
-    sendCommand (if cfgShadowEnabled cfg then "CMD:SHADOW_ON" else "CMD:SHADOW_OFF")
-    -- March steps
-    sendCommand ("CMD:SET_MARCH_STEPS:" ++ show (cfgMarchSteps cfg))
-    -- Post-process filter
-    sendCommand ("CMD:SET_FILTER:" ++ cfgFilter cfg)
-    -- Exposure
-    sendCommand ("CMD:SET_EXPOSURE:" ++ show (cfgExposure cfg))
+sendConfig cfg = mapM_ sendCommand $
+    [ "CMD:SET_CAMERA_DIST:" ++ show (cfgDefaultCameraDist cfg)
+    , if cfgAutoOrbit cfg then "CMD:OrbitMode" else "CMD:StaticMode"
+    ] ++ appearanceCommands cfg
 
 
 -- | Find the first line (1-based) where an identifier appears as a whole

@@ -5,6 +5,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import Data.Void (Void)
+import Control.Monad (void)
 import Control.Monad.Combinators.Expr
 
 type Parser = Parsec Void String
@@ -33,7 +34,10 @@ identifier = lexeme ((:) <$> letterChar <*> many (alphaNumChar <|> char '_'))
 -------------------------------------------------
 pTerm :: Parser Expr
 pTerm = choice
-  [ Lit <$> float <?> "number"
+  [ Lit <$> try float <?> "number"
+    -- Unary minus on anything that isn't a plain literal: -x, -(a + b).
+    -- Literals keep parsing as Lit (-5) via the signed float above.
+  , Sub (Lit 0) <$> (symbol "-" *> pTerm)
   , try $ do
       name <- identifier
       notFollowedBy (char '(') 
@@ -62,43 +66,66 @@ shapeKeyword name = try $ do
     _ <- symbol "("
     return ()
 
+-- | Separator between a call's arguments. Hitting ')' where another
+--   argument was expected means too few arguments, so say what the call
+--   should look like instead of a generic "expecting comma".
+argSep :: String -> Parser ()
+argSep usage = do
+    early <- optional (lookAhead (symbol ")"))
+    case early of
+        Just _  -> fail ("too few arguments; expected " ++ usage)
+        Nothing -> void (symbol "," <?> "comma")
+
+-- | The closing ')' of a call. A ',' here means too many arguments
+--   (e.g. the old sphere(r, 16) form), so show the correct form.
+pClose :: String -> Parser ()
+pClose usage = do
+    extra <- optional (lookAhead (symbol ","))
+    case extra of
+        Just _  -> fail ("too many arguments; expected " ++ usage)
+        Nothing -> void (symbol ")" <?> ("closing ')' for " ++ usage))
+
 pCube :: Parser Shape
 pCube = do
     shapeKeyword "cube"
+    let usage = "cube(width, height, depth)"
     x <- pExpr <?> "first argument (X size) for cube"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     y <- pExpr <?> "second argument (Y size) for cube"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     z <- pExpr <?> "third argument (Z size) for cube"
-    _ <- symbol ")" <?> "closing ')' for cube"
+    pClose usage
     return (Cube x y z)
 
 pCylinder :: Parser Shape
 pCylinder = do
     shapeKeyword "cylinder"
+    let usage = "cylinder(radius, height)"
     r <- pExpr <?> "radius argument for cylinder"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     h <- pExpr <?> "height argument for cylinder"
-    _ <- symbol ")" <?> "closing ')' for cylinder"
+    pClose usage
     return (Cylinder r h)
 
 pSphere :: Parser Shape
 pSphere = do
     shapeKeyword "sphere"
+    let usage = "sphere(radius)"
     r <- pExpr <?> "radius argument for sphere"
-    _ <- symbol ")" <?> "closing ')' for sphere"
+    pClose usage
     return (Sphere r)
 
 pCone :: Parser Shape
 pCone = do
     shapeKeyword "cone"
+    let usage = "cone(radius, height) or cone(radius, top_radius, height)"
     r <- pExpr <?> "base radius for cone"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     
     -- Updated to choose between (top_radius, height) or just (height)
     let parse3 = try $ do
             tr <- pExpr <?> "top radius for cone"
-            _ <- symbol "," <?> "comma"
+            argSep usage
             h <- pExpr <?> "height for cone"
             return (tr, h)
         parse2 = do
@@ -106,52 +133,56 @@ pCone = do
             return (Lit 0, h)
             
     (tr, h) <- parse3 <|> parse2
-    _ <- symbol ")" <?> "closing ')' for cone"
+    pClose usage
     return (Cone r tr h)
 
 pTorus :: Parser Shape
 pTorus = do
     shapeKeyword "torus"
+    let usage = "torus(radius, tube_radius)"
     r <- pExpr <?> "main radius for torus"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     tr <- pExpr <?> "tube radius for torus"
-    _ <- symbol ")" <?> "closing ')' for torus"
+    pClose usage
     return (Torus r tr)
 
 pMove :: Parser Shape
 pMove = do
     shapeKeyword "move"
+    let usage = "move(x, y, z, shape)"
     x <- pExpr <?> "X offset for move"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     y <- pExpr <?> "Y offset for move"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     z <- pExpr <?> "Z offset for move"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     innerShape <- pShape <?> "shape to move"
-    _ <- symbol ")" <?> "closing ')' for move"
+    pClose usage
     return (Move x y z innerShape)
 
 pRepeat :: Parser Shape
 pRepeat = do
     shapeKeyword "repeat"
+    let usage = "repeat(x_spacing, y_spacing, z_spacing, shape)"
     x <- pExpr <?> "X spacing"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     y <- pExpr <?> "Y spacing"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     z <- pExpr <?> "Z spacing"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     innerShape <- pShape <?> "shape to repeat"
-    _ <- symbol ")" <?> "closing ')' for repeat"
+    pClose usage
     return (Repeat x y z innerShape)
 
 -- Helper to quickly generate rotation parsers
 pRotate :: String -> (Expr -> Shape -> Shape) -> Parser Shape
 pRotate name constructor = do
     shapeKeyword name
+    let usage = name ++ "(degrees, shape)"
     deg <- pExpr <?> ("degrees to " ++ name)
-    _ <- symbol "," <?> "comma"
+    argSep usage
     innerShape <- pShape <?> ("shape to " ++ name)
-    _ <- symbol ")" <?> ("closing ')' for " ++ name)
+    pClose usage
     return (constructor deg innerShape)
 
 pRotateX :: Parser Shape
@@ -166,28 +197,29 @@ pRotateZ = pRotate "rotateZ" RotateZ
 pScale :: Parser Shape
 pScale = do
     shapeKeyword "scale"
+    let usage = "scale(factor, shape) or scale(x, y, z, shape)"
     
     -- Try reading 3 arguments first (X, Y, Z)
     let parse3 = try $ do
             sx <- pExpr <?> "X scale factor"
-            _ <- symbol "," <?> "comma"
+            argSep usage
             sy <- pExpr <?> "Y scale factor"
-            _ <- symbol "," <?> "comma"
+            argSep usage
             sz <- pExpr <?> "Z scale factor"
-            _ <- symbol "," <?> "comma"
+            argSep usage
             return (sx, sy, sz)
             
     -- If it fails, fall back to 1 uniform argument
         parse1 = do
             s <- pExpr <?> "uniform scale factor"
-            _ <- symbol "," <?> "comma"
+            argSep usage
             return (s, s, s)
 
     -- Choose the successful parser
     (sx, sy, sz) <- parse3 <|> parse1
     
     innerShape <- pShape <?> "shape to scale"
-    _ <- symbol ")" <?> "closing ')' for scale"
+    pClose usage
     return (Scale sx sy sz innerShape)
 
 pGroup :: Parser Shape
@@ -200,10 +232,11 @@ pGroup = do
 pBinaryCSG :: String -> (Shape -> Shape -> Shape) -> Parser Shape
 pBinaryCSG keyword constructor = do
     shapeKeyword keyword
+    let usage = keyword ++ "(shape_a, shape_b)"
     shape1 <- pShape <?> ("first shape for " ++ keyword)
-    _ <- symbol "," <?> "comma"
+    argSep usage
     shape2 <- pShape <?> ("second shape for " ++ keyword)
-    _ <- symbol ")" <?> ("closing ')' for " ++ keyword)
+    pClose usage
     return (constructor shape1 shape2)
 
 pUnion :: Parser Shape
@@ -215,17 +248,19 @@ pIntersection = pBinaryCSG "intersection" Intersection
 pDifference :: Parser Shape
 pDifference = pBinaryCSG "difference" Difference
 
+-- | A colour or material name, optionally wrapped in double quotes, so
+--   both paint(#FF5733, ...) and paint("#FF5733", ...) work.
+optQuoted :: Parser String -> Parser String
+optQuoted p = lexeme (between (char '"') (char '"') p <|> p)
+
 pHexColor :: Parser String
-pHexColor = lexeme $ do
-    _ <- char '#'
-    digits <- count 6 hexDigitChar
-    return ('#' : digits)
+pHexColor = (:) <$> char '#' <*> count 6 hexDigitChar
 
 pPresetColor :: Parser String
-pPresetColor = lexeme (choice (map symbol ["white", "black", "red", "blue", "green"]))
+pPresetColor = choice (map string ["white", "black", "red", "blue", "green"])
 
 pColor :: Parser String
-pColor = try pHexColor <|> pPresetColor
+pColor = optQuoted (pHexColor <|> pPresetColor)
 
 pPaint :: Parser Shape
 pPaint = do
@@ -237,7 +272,7 @@ pPaint = do
     return (Paint col shapes)
 
 pMaterialPreset :: Parser String
-pMaterialPreset = lexeme (choice (map symbol ["matte", "plastic", "neon", "metal"]))
+pMaterialPreset = optQuoted (choice (map string ["matte", "plastic", "neon", "metal"]))
 
 pMaterial :: Parser Shape
 pMaterial = do
@@ -295,13 +330,14 @@ pDraw = Draw <$> pShape
 pLight :: Parser Statement
 pLight = do
     shapeKeyword "light"
+    let usage = "light(x, y, z) or light(x, y, z, intensity)"
     x <- pExpr <?> "light X position"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     y <- pExpr <?> "light Y position"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     z <- pExpr <?> "light Z position"
     i <- option (Lit 1.0) (symbol "," *> (pExpr <?> "light intensity"))
-    _ <- symbol ")" <?> "closing ')' for light"
+    pClose usage
     return (Light x y z i)
 
 -- | camera(t, yaw, pitch, dist) places a camera keyframe at t seconds on
@@ -311,22 +347,23 @@ pLight = do
 pCameraKey :: Parser Statement
 pCameraKey = do
     shapeKeyword "camera"
+    let usage = "camera(t, yaw, pitch, dist) or camera(t, yaw, pitch, dist, x, y, z)"
     t <- pExpr <?> "keyframe time (seconds) for camera"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     yaw <- pExpr <?> "camera yaw (degrees)"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     pitch <- pExpr <?> "camera pitch (degrees)"
-    _ <- symbol "," <?> "comma"
+    argSep usage
     dist <- pExpr <?> "camera distance"
     (tx, ty, tz) <- option (Lit 0, Lit 0, Lit 0) $ do
         _ <- symbol ","
         x <- pExpr <?> "camera target X"
-        _ <- symbol "," <?> "comma"
+        argSep usage
         y <- pExpr <?> "camera target Y"
-        _ <- symbol "," <?> "comma"
+        argSep usage
         z <- pExpr <?> "camera target Z"
         return (x, y, z)
-    _ <- symbol ")" <?> "closing ')' for camera"
+    pClose usage
     return (CameraKey t yaw pitch dist tx ty tz)
 
 pStatement :: Parser Statement

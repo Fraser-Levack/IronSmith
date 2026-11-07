@@ -6,13 +6,14 @@ import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
 import Graphics.Vty.CrossPlatform (mkVty)
 import System.Directory (doesFileExist)
-import Control.Concurrent (threadDelay)
+import System.Environment (getArgs)
 
 import AppState
 import Config (loadConfig, defaultConfig, cfgDefaultObjectColor, cfgFilter)
 import AppCore
 import AppUI
 import AppEvents
+import Cli (runCli)
 
 app :: BChan CustomEvent -> App AppState CustomEvent Name
 app chan = App
@@ -38,30 +39,31 @@ app chan = App
         ]
     }
 
+-- | With arguments, run the headless CLI (check/render/export); with none,
+--   open the TUI editor.
 main :: IO ()
 main = do
+    args <- getArgs
+    if null args then runTui else runCli args
+
+runTui :: IO ()
+runTui = do
     recents <- loadRecents
     configPath <- getConfigPath
-    cfg <- loadConfig configPath    -- NEW: loads or creates ironsmith.toml
-    
+    cfg <- loadConfig configPath    -- loads or creates ironsmith.toml
+
+    h <- launchViewer
+
+    -- Wait for the viewer's socket before sending anything: messages sent
+    -- earlier are silently dropped (the startup demo used to be lost).
+    _ <- waitForViewer 10
+    sendConfig cfg
+
     demoPath <- getDemoPath
     demoExists <- doesFileExist demoPath
-    
-    if demoExists
-        then do
-            code <- readFile demoPath
-            _ <- compileAndSave (cfgDefaultObjectColor cfg) True code
-            return ()
-        else do
-            _ <- compileAndSave (cfgDefaultObjectColor cfg) True "torus(4, 1)"
-            return ()
-    
-    h <- launchViewer
-    
-    -- Small delay to let viewer open its TCP socket before we send config
-    Control.Concurrent.threadDelay 500000  -- 0.5 seconds
-    sendConfig cfg                          -- NEW: send config to viewer
-    
+    demoCode <- if demoExists then readFile demoPath else return "torus(4, 1)"
+    _ <- compileAndSave (cfgDefaultObjectColor cfg) True demoCode
+
     chan <- newBChan 10
     
     let initialState = AppState

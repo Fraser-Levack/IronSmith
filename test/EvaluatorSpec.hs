@@ -174,10 +174,15 @@ spec = do
                       ++ [Draw (ShapeRef "a")]
             in peakStackDepth (compileToBytecode (0, 0, 0) chain) `shouldBe` 2
 
-        it "keeps difference operand order even when the first operand is deeper" $
-            -- difference(a, b) must still push b first, then a.
+        it "compiles difference(a, b) as a minus b, pushing a first" $
+            -- The viewer and exporter compute (first pushed) - (top).
+            compileShape Map.empty 0.0 (Difference (Sphere (Lit 1)) (Sphere (Lit 2)))
+                `shouldBe` [1.0, 1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 11.0, 0.0, 0.0, 0.0]
+
+        it "keeps difference operand order even when the second operand is deeper" $
+            -- Unlike union, difference can't be reordered to save stack.
             let deep = Union (Sphere (Lit 1)) (Sphere (Lit 2))
-            in compileShape Map.empty 0.0 (Difference deep (Sphere (Lit 3)))
+            in compileShape Map.empty 0.0 (Difference (Sphere (Lit 3)) deep)
                 `shouldBe` [ 1.0, 3.0, 0.0, 0.0
                            , 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0
                            , 11.0, 0.0, 0.0, 0.0 ]

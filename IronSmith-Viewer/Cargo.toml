@@ -22,6 +22,8 @@ dirs = "5.0.1"
 
 gif = "0.13"
 
+png = "0.17"
+
 [profile.release]
 # Optimise for speed, not size: naga parses/validates every generated scene
 # shader on the CPU, and that runs on each structural edit.
