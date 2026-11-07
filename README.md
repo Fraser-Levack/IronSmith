@@ -9,7 +9,7 @@
 
 ## 🖼️ Gallery
 
-Every image below is a plain-text `.irsm` script in [`examples/`](./examples), rendered live by the viewer. Open one in the editor, press **Ctrl+A** to play its turntable, and change any number to see it update instantly.
+Every image below is a plain-text `.irsm` script in [`examples/`](./examples), rendered live by the viewer..
 
 <p align="center">
   <img src="./docs/gallery/starfighter_spin.gif" alt="Starfighter turntable" width="32%" />
@@ -23,7 +23,7 @@ Every image below is a plain-text `.irsm` script in [`examples/`](./examples), r
   <img src="./docs/gallery/launch_pad_flythrough.gif" alt="Launch pad camera fly-through" width="60%" />
 </p>
 
-[`examples/launch_pad.irsm`](./examples/launch_pad.irsm) is a deliberately simple scene. Seven `camera(...)` keyframes turn it into a shot sequence: low at the engines, a crane up to the crew window, the nose cone, a wide reveal, then round the tower and back to the start for a seamless loop.
+[`examples/launch_pad.irsm`](./examples/launch_pad.irsm) Seven `camera(...)` keyframes turn it into a shot sequence: low at the engines, a crane up , a wide reveal, then round the tower and back to the start for a seamless loop.
 
 ```
 // camera(time, yaw, pitch, distance, look-at x, y, z)
@@ -223,7 +223,7 @@ vec4 apply(vec2 uv) {
 
 Drop the file in the folder and it's instantly part of the `Ctrl+F` cycle. Filters are compiled with the same panic-safe pipeline as models — a broken filter never crashes the viewer, it just keeps the last working one.
 
-## 🚩 Recently Made Demo models
+## 🚩 Older Demo models
 
 <p align="center">
   <img src="./saved_model_milestones/demo_photos/DemoCastle.png" alt="Castle Demo" height="200" />
