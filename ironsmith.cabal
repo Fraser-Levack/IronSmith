@@ -16,6 +16,7 @@ executable ironsmith
                       AppCore,
                       AppUI,
                       AppEvents,
+                      Selection,
                       Cli
 
     hs-source-dirs:   app, src
@@ -33,6 +34,7 @@ executable ironsmith
                       brick,
                       vty,
                       vty-crossplatform,
+                      text-zipper,
                       mtl,
                       microlens,
                       directory,
@@ -50,9 +52,11 @@ test-suite ironsmith-test
                       Parser,
                       Evaluator,
                       Exporter,
+                      Selection,
                       ParserSpec,
                       EvaluatorSpec,
-                      ExporterSpec
+                      ExporterSpec,
+                      SelectionSpec
     default-language: Haskell2010
     ghc-options:      -threaded
     build-depends:    base >= 4.14 && < 5,

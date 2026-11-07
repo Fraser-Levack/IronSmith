@@ -10,6 +10,7 @@ import System.FilePath (takeFileName)
 import Data.Char (isAlpha, isAlphaNum, isDigit, isHexDigit, isSpace) -- Required for the Lexer
 
 import AppState
+import Selection (lineSelection, applySelection)
 
 drawUI st = case _mode st of
     Splash        -> [drawSplash st]
@@ -74,19 +75,28 @@ titleWidget = hBox
 drawEditor :: AppState -> Widget Name
 drawEditor st = ui
   where
-    -- This handles Syntax Highlighting, Error Backgrounds, and Empty Line Collapsing
-    drawLine lineNum s = 
+    -- Syntax highlighting, error-line background, and the selection
+    -- overlay. Empty lines render as a space so Brick doesn't collapse
+    -- them (which would misalign the cursor with the text).
+    selection = fmap (\a -> (a, E.getCursorPosition (_editor st))) (_selAnchor st)
+
+    drawLine lineNum s =
         let isErr = case _status st of
                         ErrorMsg _ errLine -> lineNum == errLine
                         _                  -> False
-            
-            -- Prevent line collapse by rendering a space if the line is completely empty
-            baseWidget = if null s then str " " else hBox (tokenize s)
-            
+            sel     = lineSelection selection (lineNum - 1) s
+            spans   = applySelection (attrName "selection") sel (tokenSpans s)
+            baseWidget = if null spans then str " " else hBox (map spanWidget spans)
         in if isErr then withAttr (attrName "errorBg") baseWidget else baseWidget
 
-    -- Zip the lines with their line number [1..] so we know which one is rendering
-    codeWidget = E.renderEditor (vBox . zipWith drawLine [(1::Int)..]) True (_editor st)
+    -- Zip the lines with their line number [1..] so we know which one is
+    -- rendering. The editor draws inside its own viewport; the scroll bars
+    -- attach to it, and the vertical one is clickable (see AppEvents).
+    codeWidget = withClickableVScrollBars ScrollBar
+               $ withVScrollBars OnRight
+               $ withVScrollBarHandles
+               $ withHScrollBars OnBottom
+               $ E.renderEditor (vBox . zipWith drawLine [(1::Int)..]) True (_editor st)
     
     dirtyMarker = if _isDirty st then "*" else ""
     fileLabel = case _currentFile st of
@@ -113,7 +123,7 @@ drawEditor st = ui
     ui = withBorderStyle unicode
          $ borderWithLabel (str (" IronSmith:" ++ fileLabel))
          $ vBox
-             [ padAll 1 codeWidget
+             [ padLeft (Pad 1) $ padTop (Pad 1) codeWidget
              , hBorder
              , padAll 1 $ hBox [modeIndicator, str " | ", statusWidget]
              ]
@@ -245,21 +255,35 @@ colorConfigValue w
     | otherwise    = str w
 
 -- | SYNTAX HIGHLIGHTING LEXER
-tokenize :: String -> [Widget Name]
-tokenize [] = []
-tokenize s@(c:cs)
+--   Splits a line into highlighted spans that cover every character in
+--   order, so a column index into the line maps directly onto them (the
+--   selection overlay relies on this).
+tokenSpans :: String -> [(AttrName, String)]
+tokenSpans [] = []
+tokenSpans s@(c:cs)
     | isAlpha c = let (w, rest) = span (\x -> isAlphaNum x || x == '_') s
-                  in colorKeyword w : tokenize rest
-    | isDigit c || (c == '-' && not (null cs) && isDigit (head cs)) = 
+                  in (keywordAttr w, w) : tokenSpans rest
+    | isDigit c || (c == '-' && not (null cs) && isDigit (head cs)) =
                   let (w, rest) = span (\x -> isDigit x || x == '.' || x == '-') s
-                  in withAttr (attrName "number") (str w) : tokenize rest
+                  in (attrName "number", w) : tokenSpans rest
+    | c == '/' && take 1 cs == "/" = [(attrName "comment", s)]
     | c == '#'  = let (w, rest) = span isHexDigit cs
-                  in withAttr (attrName "colorHex") (str ("#" ++ w)) : tokenize rest
-    | otherwise = str [c] : tokenize cs
+                  in (attrName "colorHex", '#' : w) : tokenSpans rest
+    | otherwise = (plainAttr, [c]) : tokenSpans cs
 
-colorKeyword :: String -> Widget Name
-colorKeyword w
-    | w `elem` ["cube", "sphere", "cylinder", "cone", "torus"] = withAttr (attrName "shape") (str w)
-    | w `elem` ["union", "difference", "intersection", "group"] = withAttr (attrName "csg") (str w)
-    | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint", "light", "camera"] = withAttr (attrName "transform") (str w)
-    | otherwise = str w
+-- | Attribute for unhighlighted text: rendered without 'withAttr' so it
+--   inherits the surrounding one (e.g. the error-line background).
+plainAttr :: AttrName
+plainAttr = attrName "plain"
+
+spanWidget :: (AttrName, String) -> Widget Name
+spanWidget (a, t)
+    | a == plainAttr = str t
+    | otherwise      = withAttr a (str t)
+
+keywordAttr :: String -> AttrName
+keywordAttr w
+    | w `elem` ["cube", "sphere", "cylinder", "cone", "torus"] = attrName "shape"
+    | w `elem` ["union", "difference", "intersection", "group"] = attrName "csg"
+    | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint", "material", "light", "camera"] = attrName "transform"
+    | otherwise = plainAttr

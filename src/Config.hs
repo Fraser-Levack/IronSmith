@@ -45,6 +45,9 @@ defaultKeybindings =
     , ("export_video",     "ctrl+shift+v")
     , ("undo",             "ctrl+z")
     , ("redo",             "ctrl+y")
+    , ("copy",             "ctrl+c")
+    , ("cut",              "ctrl+x")
+    , ("paste",            "ctrl+v")
     ]
 
 -- | Sensible defaults matching the current hardcoded values

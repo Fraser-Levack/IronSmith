@@ -5,19 +5,26 @@ import Brick.BChan (BChan, writeBChan)
 import Brick.Types (zoom)
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
-import Control.Monad (when)
+import Control.Monad (when, void)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State (get, put)
+import Control.Monad.State (get, put, modify)
+import Control.Exception (SomeException, try)
+import qualified Data.Text.Zipper as Z
+import Lens.Micro ((^.))
+import System.Exit (ExitCode(..))
+import System.Info (os)
+import System.Process (readProcessWithExitCode)
 import Control.Concurrent (forkIO, threadDelay)
 import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, makeAbsolute)
 import System.FilePath (replaceExtension, takeExtension, dropExtension)
 import Data.Char (isDigit, toLower)
-import Data.List (sort, elemIndex)
+import Data.List (sort, elemIndex, intercalate)
 import Data.Maybe (listToMaybe, fromMaybe)
 
 import AppState
 import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, IronConfig)
 import AppCore
+import Selection (deleteRange, selectedText)
 
 -- | Write `code` to `path`, recompile/preview it, and record it in the
 --   recent-files list. Shared by Ctrl+S, the unsaved-changes prompt, and
@@ -50,6 +57,8 @@ openFile st path = do
             , _undoStack = []
             , _redoStack = []
             , _pendingUndoSnapshot = True
+            , _selAnchor = Nothing
+            , _mouseDragging = False
             })
 
 -- | GLOBAL ROUTER
@@ -100,7 +109,8 @@ handleSplash _ (VtyEvent (V.EvKey V.KEsc []))   = halt
 handleSplash _ (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
     put (st { _mode = Editing, _editor = E.editor CodeEditor Nothing "", _currentFile = Nothing, _status = Normal, _isDirty = False
-            , _undoStack = [], _redoStack = [], _pendingUndoSnapshot = True })
+            , _undoStack = [], _redoStack = [], _pendingUndoSnapshot = True
+            , _selAnchor = Nothing, _mouseDragging = False })
 handleSplash _ (VtyEvent (V.EvKey (V.KChar 'o') [])) = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
@@ -356,6 +366,7 @@ runCommand chan CmdUndo = do
                     , _undoStack = rest
                     , _redoStack = current : _redoStack st
                     , _pendingUndoSnapshot = True
+                    , _selAnchor = Nothing
                     , _isDirty = True
                     , _editVersion = nextVersion
                     })
@@ -376,6 +387,7 @@ runCommand chan CmdRedo = do
                     , _redoStack = rest
                     , _undoStack = current : _undoStack st
                     , _pendingUndoSnapshot = True
+                    , _selAnchor = Nothing
                     , _isDirty = True
                     , _editVersion = nextVersion
                     })
@@ -383,6 +395,40 @@ runCommand chan CmdRedo = do
                 threadDelay 500000
                 writeBChan chan (CompileTimerFired nextVersion)
             return ()
+
+-- Copy the selection, or the whole current line when nothing is selected.
+runCommand _ CmdCopy = do
+    st <- get
+    let txt = clipboardText st
+    liftIO $ copyToSystemClipboard txt
+    put (st { _clipboard = txt })
+
+-- Cut the selection, or the whole current line when nothing is selected.
+runCommand chan CmdCut = do
+    st <- get
+    let txt = clipboardText st
+    liftIO $ copyToSystemClipboard txt
+    put (st { _clipboard = txt })
+    trackEdit chan $ case selectionRange st of
+        Just _  -> deleteSelection
+        Nothing -> do
+            let ls = E.getEditContents (_editor st)
+                (r, _) = E.getCursorPosition (_editor st)
+                rest = case take r ls ++ drop (r + 1) ls of
+                           [] -> [""]
+                           xs -> xs
+                ed = E.applyEdit (Z.moveCursorClosest (r, 0))
+                                 (E.editor CodeEditor Nothing (intercalate "\n" rest))
+            modify (\s -> s { _editor = ed })
+
+-- Paste the internal clipboard, replacing any selection. (Most terminals
+-- also paste the OS clipboard themselves via bracketed paste, which goes
+-- through handleEditorInput.)
+runCommand chan CmdPaste = do
+    st <- get
+    trackEdit chan $ do
+        deleteSelection
+        zoom editorLens $ modify (E.applyEdit (Z.insertMany (_clipboard st)))
 
 runCommand _ CmdSave = do
     st <- get
@@ -407,36 +453,165 @@ runCommand _ CmdSave = do
 -- collapses to a single undo step; pausing (or the compile firing) starts a
 -- fresh boundary for the next burst. A new edit after an undo always clears
 -- the redo stack (standard undo/redo semantics).
+--
+-- Selection: Shift+arrows/Home/End and left-drag extend a selection from
+-- `_selAnchor` to the cursor. Typing, Enter, paste, Backspace and Delete
+-- replace/remove the selected text; any other key clears it.
 handleEditorInput :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
 handleEditorInput chan ev = do
     st <- get
-    let oldText = E.getEditContents (_editor st)
+    let hasSel = selectionRange st /= Nothing
+    case ev of
+        -- Shift+movement: start (or keep) the anchor, then move the cursor.
+        VtyEvent (V.EvKey key [V.MShift]) | Just mv <- shiftMovement key -> do
+            let cur = E.getCursorPosition (_editor st)
+            put (st { _selAnchor = Just (fromMaybe cur (_selAnchor st)) })
+            zoom editorLens $ E.handleEditorEvent (VtyEvent (V.EvKey mv []))
 
-    zoom editorLens $ E.handleEditorEvent ev
+        -- Left button: a fresh press places the cursor and drops the anchor
+        -- there; further MouseDowns while held (terminal drag reports)
+        -- move only the cursor, extending the selection.
+        MouseDown CodeEditor V.BLeft _ (Location (col, row)) -> do
+            let moved = E.applyEdit (Z.moveCursorClosest (row, col)) (_editor st)
+                cur   = E.getCursorPosition moved
+                anchor | _mouseDragging st = _selAnchor st
+                       | otherwise         = Just cur
+            put (st { _editor = moved, _selAnchor = anchor, _mouseDragging = True })
 
+        MouseUp {} -> do
+            -- A plain click (no drag distance) leaves no selection behind.
+            let cur = E.getCursorPosition (_editor st)
+                anchor = if _selAnchor st == Just cur then Nothing else _selAnchor st
+            put (st { _mouseDragging = False, _selAnchor = anchor })
+
+        -- Mouse wheel over the editor or its scroll bar. The editor keeps
+        -- its cursor in view, so scrolling moves the cursor.
+        MouseDown _ V.BScrollUp _ _   -> moveCursorLines (-3)
+        MouseDown _ V.BScrollDown _ _ -> moveCursorLines 3
+
+        -- Clickable vertical scroll bar: arrows step a line, the trough
+        -- pages by the visible height.
+        MouseDown (ScrollBar el CodeEditor) V.BLeft _ _ -> do
+            page <- maybe 10 (\vp -> max 1 (snd (vp ^. vpSize) - 1)) <$> lookupViewport CodeEditor
+            case el of
+                SBHandleBefore -> moveCursorLines (-1)
+                SBHandleAfter  -> moveCursorLines 1
+                SBTroughBefore -> moveCursorLines (negate page)
+                SBTroughAfter  -> moveCursorLines page
+                SBBar          -> return ()
+
+        -- Backspace/Delete with a selection: remove it, nothing else.
+        VtyEvent (V.EvKey key []) | hasSel, key `elem` [V.KBS, V.KDel] ->
+            trackEdit chan deleteSelection
+
+        -- Inserting text with a selection replaces it.
+        VtyEvent (V.EvKey key []) | hasSel, insertsText key ->
+            trackEdit chan (deleteSelection >> passToEditor ev)
+        VtyEvent (V.EvPaste _) | hasSel ->
+            trackEdit chan (deleteSelection >> passToEditor ev)
+
+        -- Any other key (plain arrows, Ctrl+K, ...) drops the selection.
+        VtyEvent (V.EvKey _ _) -> trackEdit chan (clearSelection >> passToEditor ev)
+
+        _ -> trackEdit chan (passToEditor ev)
+  where
+    insertsText (V.KChar c) = c /= '\t'
+    insertsText V.KEnter    = True
+    insertsText _           = False
+
+-- | Shift+key -> the plain key whose movement extends the selection.
+shiftMovement :: V.Key -> Maybe V.Key
+shiftMovement k
+    | k `elem` [V.KUp, V.KDown, V.KLeft, V.KRight, V.KHome, V.KEnd] = Just k
+    | otherwise = Nothing
+
+-- | What Copy/Cut take: the selection, or the current line plus newline.
+clipboardText :: AppState -> String
+clipboardText st = case selectionRange st of
+    Just (a, b) -> selectedText ls a b
+    Nothing     -> (if r < length ls then ls !! r else "") ++ "\n"
+  where
+    ls = E.getEditContents (_editor st)
+    (r, _) = E.getCursorPosition (_editor st)
+
+passToEditor :: BrickEvent Name CustomEvent -> EventM Name AppState ()
+passToEditor ev = zoom editorLens $ E.handleEditorEvent ev
+
+-- | The current selection as (anchor, cursor), if it is non-empty.
+selectionRange :: AppState -> Maybe ((Int, Int), (Int, Int))
+selectionRange st = case _selAnchor st of
+    Just a | a /= cur -> Just (a, cur)
+    _                 -> Nothing
+  where cur = E.getCursorPosition (_editor st)
+
+clearSelection :: EventM Name AppState ()
+clearSelection = modify (\st -> st { _selAnchor = Nothing, _mouseDragging = False })
+
+-- | Remove the selected text (if any) and put the cursor where it began.
+deleteSelection :: EventM Name AppState ()
+deleteSelection = do
+    st <- get
+    case selectionRange st of
+        Nothing -> clearSelection
+        Just (a, b) -> do
+            let (newLines, (r, c)) = deleteRange (E.getEditContents (_editor st)) a b
+                ed = E.applyEdit (Z.moveCursor (r, c)) (E.editor CodeEditor Nothing (intercalate "\n" newLines))
+            put (st { _editor = ed, _selAnchor = Nothing, _mouseDragging = False })
+
+-- | Move the cursor up (negative) or down by n lines, keeping its column
+--   where possible. Used for the mouse wheel and scroll bar.
+moveCursorLines :: Int -> EventM Name AppState ()
+moveCursorLines n = do
+    st <- get
+    let (r, c) = E.getCursorPosition (_editor st)
+    put (st { _editor = E.applyEdit (Z.moveCursorClosest (r + n, c)) (_editor st) })
+
+-- | Run an editor mutation; if it changed the text, mark the buffer dirty,
+--   record an undo snapshot (see the heuristic above), and schedule the
+--   debounced recompile.
+trackEdit :: BChan CustomEvent -> EventM Name AppState () -> EventM Name AppState ()
+trackEdit chan action = do
+    oldText <- E.getEditContents . _editor <$> get
+    action
     st' <- get
     let newText = E.getEditContents (_editor st')
+    when (oldText /= newText) $ do
+        -- Increment the version, set dirty flag, and fork the timer thread
+        let nextVersion = _editVersion st' + 1
+            newUndoStack
+                | _pendingUndoSnapshot st' = unlines oldText : _undoStack st'
+                | otherwise                 = _undoStack st'
+        put (st' { _isDirty = True
+                 , _editVersion = nextVersion
+                 , _undoStack = newUndoStack
+                 , _redoStack = []
+                 , _pendingUndoSnapshot = False
+                 })
+        _ <- liftIO $ forkIO $ do
+            threadDelay 500000 -- Sleep for 500ms
+            writeBChan chan (CompileTimerFired nextVersion)
+        return ()
 
-    if oldText /= newText
-        then do
-            -- Increment the version, set dirty flag, and fork the timer thread
-            let nextVersion = _editVersion st' + 1
-                newUndoStack
-                    | _pendingUndoSnapshot st' = unlines oldText : _undoStack st'
-                    | otherwise                 = _undoStack st'
-            put (st' { _isDirty = True
-                     , _editVersion = nextVersion
-                     , _undoStack = newUndoStack
-                     , _redoStack = []
-                     , _pendingUndoSnapshot = False
-                     })
-
-            liftIO $ forkIO $ do
-                threadDelay 500000 -- Sleep for 500ms
-                writeBChan chan (CompileTimerFired nextVersion)
-            return ()
-        else
-            put st'
+-- | Best-effort copy to the OS clipboard so text can be pasted into other
+--   programs. Runs in the background; failures (no clipboard tool) are
+--   ignored, the internal clipboard still works.
+copyToSystemClipboard :: String -> IO ()
+copyToSystemClipboard txt = void $ forkIO $ void $ try' $
+    case os of
+        "mingw32" -> pipeTo "clip" []
+        "darwin"  -> pipeTo "pbcopy" []
+        _         -> pipeTo "wl-copy" [] `orElse` pipeTo "xclip" ["-selection", "clipboard"]
+  where
+    -- clip.exe expects CRLF line endings.
+    payload = if os == "mingw32" then concatMap (\c -> if c == '\n' then "\r\n" else [c]) txt else txt
+    pipeTo cmd args = do
+        (code, _, _) <- readProcessWithExitCode cmd args payload
+        return (code == ExitSuccess)
+    orElse a b = do
+        ok <- try' a
+        if ok == Just True then return True else b
+    try' :: IO a -> IO (Maybe a)
+    try' act = either (\e -> const Nothing (e :: SomeException)) Just <$> try act
 
 
 -- | 3. UNSAVED CHANGES PROMPT

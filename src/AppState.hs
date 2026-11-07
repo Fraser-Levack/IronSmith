@@ -1,6 +1,7 @@
 module AppState where
 
 import qualified Brick.Widgets.Edit as E
+import Brick.Types (ClickableScrollbarElement)
 import Lens.Micro (Lens')
 import System.Process (ProcessHandle)
 import Data.Char (toLower, toUpper)
@@ -17,6 +18,7 @@ data AppMode = Splash | Editing | SaveDialog | OpenDialog | UnsavedPrompt | Conf
     deriving (Eq)
 
 data Name = CodeEditor | SaveEditor | OpenEditor | ConfigEditor | PaletteEditor
+          | ScrollBar ClickableScrollbarElement Name -- clickable scroll bar of a viewport
     deriving (Eq, Ord, Show)
 
 data AppStatus = Normal | Saved | Exported FilePath | FilterSet String | Info String | ErrorMsg String Int
@@ -46,6 +48,9 @@ data AppState = AppState
     , _undoStack    :: [String] -- snapshots of the editor's full text, most recent first (undo/redo, Editing mode only)
     , _redoStack    :: [String] -- snapshots popped off the undo stack, replayed by redo
     , _pendingUndoSnapshot :: Bool -- True when the *next* edit should start a fresh undo boundary
+    , _selAnchor    :: Maybe (Int, Int) -- code editor selection anchor (row, col); the cursor is the other end
+    , _mouseDragging :: Bool -- left button held in the code editor (drag-to-select in progress)
+    , _clipboard    :: String -- internal clipboard for copy/cut/paste (also mirrored to the OS clipboard)
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)
@@ -67,7 +72,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -84,6 +89,9 @@ commandConfigKey CmdToggleAnimation = "toggle_animation"
 commandConfigKey CmdExportVideo    = "export_video"
 commandConfigKey CmdUndo           = "undo"
 commandConfigKey CmdRedo           = "redo"
+commandConfigKey CmdCopy           = "copy"
+commandConfigKey CmdCut            = "cut"
+commandConfigKey CmdPaste          = "paste"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -99,6 +107,9 @@ commandLabel CmdToggleAnimation  = "Play/Stop Animation"
 commandLabel CmdExportVideo      = "Export Animation Video"
 commandLabel CmdUndo             = "Undo"
 commandLabel CmdRedo             = "Redo"
+commandLabel CmdCopy             = "Copy (selection or line)"
+commandLabel CmdCut              = "Cut (selection or line)"
+commandLabel CmdPaste            = "Paste"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String

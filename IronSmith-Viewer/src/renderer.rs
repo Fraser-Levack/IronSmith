@@ -69,6 +69,23 @@ pub struct Renderer<'a> {
     filter_tx: mpsc::Sender<wgpu::RenderPipeline>,
 }
 
+/// Pick the swapchain format. The scene shader gamma-encodes its own output
+/// (`pow(col, 1/2.2)`), so an sRGB swapchain would encode it a second time
+/// and the live view would look faded/desaturated compared to screenshots
+/// and video (which undo that second encode). Prefer a plain UNORM format;
+/// only fall back to the first offered format (possibly sRGB, compensated
+/// in captures by `srgb_decode`) if no non-sRGB format exists.
+/// Float formats are avoided too: they are presented as linear (scRGB) and
+/// would wash the image out the same way.
+fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
+    use wgpu::TextureFormat as F;
+    formats
+        .iter()
+        .copied()
+        .find(|f| matches!(f, F::Bgra8Unorm | F::Rgba8Unorm))
+        .unwrap_or(formats[0])
+}
+
 /// Create the offscreen texture view the scene pass renders into.
 fn create_scene_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -144,7 +161,7 @@ impl Renderer<'_> {
         let surface_caps = surface.get_capabilities(&adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_caps.formats[0],
+            format: choose_surface_format(&surface_caps.formats),
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -153,6 +170,13 @@ impl Renderer<'_> {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        shader::log_line(
+            &log_path,
+            &format!(
+                "Surface format: {:?} (offered: {:?})",
+                config.format, surface_caps.formats
+            ),
+        );
 
         let uniforms = ShaderUniforms {
             resolution: [size.width as f32, size.height as f32],

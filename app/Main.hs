@@ -7,6 +7,8 @@ import qualified Graphics.Vty as V
 import Graphics.Vty.CrossPlatform (mkVty)
 import System.Directory (doesFileExist)
 import System.Environment (getArgs)
+import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
 
 import AppState
 import Config (loadConfig, defaultConfig, cfgDefaultObjectColor, cfgFilter)
@@ -20,7 +22,7 @@ app chan = App
     { appDraw         = drawUI
     , appChooseCursor = showFirstCursor
     , appHandleEvent  = handleEvent chan 
-    , appStartEvent   = return ()
+    , appStartEvent   = enableTerminalModes
     , appAttrMap      = const $ attrMap V.defAttr
         [ (attrName "error",    fg V.red)
         , (attrName "success", fg V.green)
@@ -36,8 +38,22 @@ app chan = App
         , (attrName "section",  fg (V.rgbColor 255 144 47) `V.withStyle` V.bold)
         , (attrName "key",      fg V.cyan `V.withStyle` V.bold)
         , (attrName "selected", V.defAttr `V.withStyle` V.reverseVideo)
+        , (attrName "selection", V.white `on` V.rgbColor 38 79 120)
+        , (scrollbarAttr,        fg V.brightBlack)
+        , (scrollbarHandleAttr,  fg (V.rgbColor 255 144 47))
         ]
     }
+
+-- | Turn on mouse reporting (click to place the cursor, drag to select,
+--   wheel to scroll, clickable scroll bars) and bracketed paste, so pasted
+--   text arrives as one event instead of a stream of keystrokes. Native
+--   terminal selection is still available with Shift+drag.
+enableTerminalModes :: EventM Name AppState ()
+enableTerminalModes = do
+    vty <- getVtyHandle
+    let out = V.outputIface vty
+    mapM_ (\m -> when (V.supportsMode out m) $ liftIO (V.setMode out m True))
+          [V.Mouse, V.BracketedPaste]
 
 -- | With arguments, run the headless CLI (check/render/export); with none,
 --   open the TUI editor.
@@ -88,6 +104,9 @@ runTui = do
             , _undoStack    = []
             , _redoStack    = []
             , _pendingUndoSnapshot = True
+            , _selAnchor    = Nothing
+            , _mouseDragging = False
+            , _clipboard    = ""
             }
             
     -- NEW: Boot up customMain instead of defaultMain
