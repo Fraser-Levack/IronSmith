@@ -46,3 +46,11 @@ spec = do
             applySelection "S" (Just (0, 0, True)) [] `shouldBe` [("S", " ")]
         it "leaves spans untouched with no selection" $
             applySelection "S" Nothing [("a", "x")] `shouldBe` [("a", "x")]
+
+    describe "normalisePaste" $ do
+        it "turns terminal carriage returns into newlines" $
+            normalisePaste "size = 5\rsphere(size)\r" `shouldBe` "size = 5\nsphere(size)\n"
+        it "collapses Windows CRLF to one newline" $
+            normalisePaste "a\r\nb" `shouldBe` "a\nb"
+        it "keeps plain newlines and expands tabs" $
+            normalisePaste "a\n\tb" `shouldBe` "a\n    b"

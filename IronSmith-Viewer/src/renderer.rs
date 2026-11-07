@@ -93,6 +93,11 @@ fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat
         .unwrap_or(formats[0])
 }
 
+/// Limit a window size to what the GPU can render (`max` per side).
+fn clamp_size(size: winit::dpi::PhysicalSize<u32>, max: u32) -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(size.width.min(max), size.height.min(max))
+}
+
 /// Create the offscreen texture view the scene pass renders into.
 fn create_scene_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -195,6 +200,7 @@ impl Renderer<'_> {
             .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await?;
         let device = Arc::new(device); // Convert device to Arc
+        let size = clamp_size(size, device.limits().max_texture_dimension_2d);
 
         // wgpu's default handler panics on validation errors, which aborts
         // the process in release builds (panic = "abort"). Log them instead;
@@ -426,6 +432,12 @@ impl Renderer<'_> {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        // A window larger than the GPU's maximum texture size (a huge
+        // multi-monitor span, or a bogus size from the OS) would fail
+        // surface validation, which aborts the release build. Render at the
+        // largest size the GPU supports instead; the window stretches it.
+        let max = self.device.limits().max_texture_dimension_2d;
+        let new_size = clamp_size(new_size, max);
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
@@ -887,4 +899,23 @@ struct FrameCapture {
     height: u32,
     padded_row: u32,
     srgb_decode: Option<[u8; 256]>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_size;
+    use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn oversized_windows_are_clamped_to_the_gpu_limit() {
+        // The crash this guards against: a 3840 x 65463 resize request.
+        assert_eq!(
+            clamp_size(PhysicalSize::new(3840, 65463), 8192),
+            PhysicalSize::new(3840, 8192)
+        );
+        assert_eq!(
+            clamp_size(PhysicalSize::new(1920, 1080), 8192),
+            PhysicalSize::new(1920, 1080)
+        );
+    }
 }

@@ -1,0 +1,113 @@
+// The Old Keep: a weathered Norman stone keep on a rocky hill at night,
+// above a palisaded bailey with a longhouse, a campfire and a watchtower.
+// Dim moonlight; the fires and windows do the rest. Press Ctrl+A for the
+// camera fly-through. Ground at y = 0; the bailey gate faces +X.
+
+light(0.55, 0.75, -0.5, 0.6)   // moonlight, from the moon's direction
+
+// ── Ground, hill and rocks ─────────────────────────────
+paint(#2E4226, move(0, -0.5, 0, cylinder(13, 1)))
+// A dome cut from a big sphere (exact, so it shades cleanly at grazing angles)
+hill = intersection(move(-2, -9.8, -1, sphere(12)), move(0, 2, 0, cube(30, 4.2, 30)))
+paint(#3A4F2C, hill)
+rock = scale(1, 0.75, 0.85, sphere(1))
+paint(#5C5850, move(1.6, 1.2, -4.2, scale(1.3, rotateY(30, rock))), move(-6.8, 0.9, 1.8, scale(1.6, rock)),
+               move(2.4, 0.6, 2.9, scale(0.9, rotateY(70, rock))), move(-4.5, 1.6, -5.2, scale(1.2, rock)),
+               move(-8.4, 0.3, -3.6, scale(1.1, rotateY(10, rock))), move(3.6, 0.2, -1.2, scale(0.7, rock)))
+
+// ── The keep ───────────────────────────────────────────
+// Everything about the keep is built around its own origin, then the whole
+// thing is set on the hilltop and turned a little off-square.
+kH = 8.5
+base = 2.1
+body = move(0, kH / 2, 0, cube(5, kH, 5))
+buttress = cube(1.3, kH + 0.4, 1.3)
+corners = group(move(2.4, kH / 2, 2.4, buttress), move(-2.4, kH / 2, 2.4, buttress), move(2.4, kH / 2, -2.4, buttress))
+pilasters = group(move(2.55, kH / 2, 0, cube(0.3, kH - 0.6, 0.8)), move(0, kH / 2, 2.55, cube(0.8, kH - 0.6, 0.3)))
+stairTurret = move(-2.4, (kH + 3) / 2, -2.4, cube(1.8, kH + 3, 1.8))
+keepStone = group(body, corners, pilasters, stairTurret)
+courses = group(move(0, 3, 0, cube(5.25, 0.22, 5.25)), move(0, 6.4, 0, cube(5.25, 0.22, 5.25)))
+keepRoof = intersection(move(0, kH, 0, rotateX(45, cube(4.2, 2.6, 2.6))), move(0, kH + 1.5, 0, cube(5, 3, 5)))
+hoarding = group(move(3.05, kH - 1.2, 0.6, cube(0.7, 0.9, 2.6)), move(3.2, kH - 0.6, 0.6, rotateZ(-30, cube(0.9, 0.1, 2.8))))
+ivy = group(move(2.7, 0.8, 2.7, sphere(0.9)), move(2.8, 2, 2.5, sphere(0.75)), move(2.6, 3.1, 2.8, sphere(0.6)),
+            move(2.75, 4, 2.3, sphere(0.45)), move(1.8, 1.2, 2.85, sphere(0.6)))
+
+// Battlements, with a ruined corner knocked out of them
+band = difference(move(0, kH + 0.4, 0, cube(5.6, 0.8, 5.6)), move(0, kH + 0.4, 0, cube(4.4, 2, 4.4)))
+merlons = group(repeat(1.1, 0, 0, cube(0.55, 60, 60)), repeat(0, 0, 1.1, cube(60, 60, 0.55)))
+ruin = move(2.6, kH + 0.6, -2.2, rotateZ(35, rotateX(20, cube(2.6, 2, 2.6))))
+battlements = difference(intersection(band, merlons), ruin)
+turretTop = intersection(move(-2.4, kH + 3.4, -2.4, cube(2, 0.7, 2)), merlons)
+
+// Arrow slits and a few lit windows
+slitZ = cube(0.22, 0.9, 0.3)
+slitX = cube(0.3, 0.9, 0.22)
+darkSlits = group(move(2.55, 3.2, -1.2, slitX), move(2.55, 6.5, 1.2, slitX), move(-1.2, 3.2, 2.55, slitZ), move(1.4, 6.2, 2.55, slitZ),
+                  move(-2.55, 5.5, 0.5, slitX), move(-3.32, 6, -2.4, slitX))
+litWindows = group(move(2.62, 5, -1.2, cube(0.15, 1.1, 0.45)), move(0.2, 7.2, 2.62, cube(0.45, 1, 0.15)), move(-2.4, 9.8, -3.32, cube(0.4, 0.8, 0.15)), move(3.42, kH - 1.1, 1.2, cube(0.08, 0.4, 0.5)))
+
+keepX = -2
+keepZ = -1
+paint(#7E776C, move(keepX, base, keepZ, rotateY(12, keepStone)))
+paint(#6E685E, move(keepX, base, keepZ, rotateY(12, group(battlements, turretTop, courses))))
+material(plastic, paint(#2F3440, move(keepX, base, keepZ, rotateY(12, keepRoof))))
+paint(#4A3220, move(keepX, base, keepZ, rotateY(12, hoarding)))
+paint(#2F4A26, move(keepX, base, keepZ, rotateY(12, ivy)))
+paint(#1A1714, move(keepX, base, keepZ, rotateY(12, darkSlits)))
+material(neon, paint(#B8480C, move(keepX, base, keepZ, rotateY(12, litWindows))))
+
+// Forebuilding and stair climbing to the keep's door
+fore = group(move(3.6, 2.1, 0.2, cube(2.4, 4.2, 2.6)), intersection(move(3.6, 4.5, 0.2, cube(2.4, 0.6, 2.6)), merlons))
+paint(#7E776C, move(keepX, base - 0.6, keepZ, rotateY(12, fore)))
+material(neon, paint(#C2500E, move(keepX, base - 0.6, keepZ, rotateY(12, move(4.82, 1.6, 0.2, cube(0.1, 1.5, 0.8))))))
+step = cube(1.4, 0.35, 1.6)
+paint(#6E685E, move(3.3, 1.4, -0.3, step), move(4.0, 1.0, -0.15, step), move(4.7, 0.6, 0.0, step), move(5.4, 0.2, 0.15, step))
+
+// ── The bailey: a palisade wrapped round the foot of the hill ──
+palisadeRing = difference(move(3, 1.1, 0.5, cylinder(7.2, 2.2)), move(3, 1, 0.5, cylinder(6.95, 3)))
+stakes = repeat(0.38, 0, 0.38, cube(0.28, 60, 0.28))
+openSide = move(-3.5, 1, 0.5, cube(8, 4, 20))
+gateGap = move(10.2, 1, 0.5, cube(2, 4, 2.6))
+paint(#5A3F28, difference(intersection(palisadeRing, stakes), group(openSide, gateGap)))
+// Gate posts, lintel and torches
+paint(#4A3220, move(10.15, 1.4, 1.6, cylinder(0.18, 2.8)), move(10.15, 1.4, -0.6, cylinder(0.18, 2.8)), move(10.15, 2.75, 0.5, cube(0.35, 0.3, 2.8)))
+material(neon, paint(#C8440A, move(10.6, 2.2, 1.9, sphere(0.16)), move(10.6, 2.2, -0.9, sphere(0.16))))
+
+// Longhouse with a glowing doorway
+paint(#6B4A30, move(5.5, 1.1, 4.2, rotateY(-20, cube(4.2, 2.2, 2.2))))
+paint(#3F3226, move(5.5, 2.2, 4.2, rotateY(-20, intersection(rotateX(45, cube(4.6, 2.1, 2.1)), move(0, 1, 0, cube(5, 2, 4))))))
+material(neon, paint(#C2500E, move(5.5, 0.8, 4.2, rotateY(-20, move(0, 0, -1.12, cube(0.7, 1.4, 0.06))))))
+
+// Campfire with sparks
+paint(#3B2B1E, move(6.8, 0.15, -1.6, rotateY(20, rotateZ(90, cylinder(0.12, 1.2)))), move(6.8, 0.15, -1.6, rotateY(-40, rotateZ(90, cylinder(0.12, 1.2)))))
+material(neon, paint(#B83A08, move(6.8, 0.45, -1.6, cone(0.45, 0.9))))
+material(neon, paint(#FFB347, move(6.8, 0.35, -1.6, cone(0.25, 0.5)), move(6.6, 1.5, -1.5, sphere(0.05)), move(7.0, 1.9, -1.8, sphere(0.04)), move(6.7, 2.3, -1.4, sphere(0.035))))
+
+// Watchtower with a burning brazier
+leg = cylinder(0.12, 4)
+paint(#4A3220, move(7.4, 2, -4.4, leg), move(8.4, 2, -4.4, leg), move(7.4, 2, -5.4, leg), move(8.4, 2, -5.4, leg))
+paint(#5A3F28, move(7.9, 4.05, -4.9, cube(1.6, 0.15, 1.6)), move(7.9, 4.5, -4.9, difference(cube(1.6, 0.8, 1.6), cube(1.4, 1, 1.4))))
+paint(#3F3226, move(7.9, 5.6, -4.9, cone(1.2, 0.9)))
+material(neon, paint(#C8440A, move(7.9, 4.5, -4.9, sphere(0.25))))
+
+// ── Dead tree on the hillside ──────────────────────────
+branch = cylinder(0.08, 1.4)
+paint(#3A2E24, move(-6, 2.6, 3.3, cylinder(0.18, 3)), move(-5.6, 3.8, 3.3, rotateZ(-40, branch)), move(-6.4, 4.0, 3.4, rotateZ(35, branch)),
+               move(-6.0, 4.3, 2.9, rotateX(-35, branch)), move(-5.3, 4.6, 3.3, rotateZ(-70, cylinder(0.05, 0.8))))
+
+// ── Night sky ──────────────────────────────────────────
+moon = difference(sphere(0.9), move(-0.4, 0.2, 0.3, sphere(0.85)))
+material(neon, paint(#E8E2C8, move(15, 16, -15, moon)))
+star = sphere(0.06)
+material(neon, paint(#CFD8E8, move(-4, 15, -11, star), move(3, 14, -12, star), move(8, 12, -9, star), move(-12, 11, -6, star),
+                              move(0, 16, -8, star), move(6, 15, -5, star), move(-7, 17, -3, star), move(11, 10, -11, star)))
+
+// ── Camera fly-through (Ctrl+A) ────────────────────────
+// camera(time, yaw, pitch, distance, look-at x, y, z)
+camera(0,   60, 18, 23,  0,  3,   0)    // wide: the hill against the night
+camera(5,   85,  7, 13,  8,  1.5, 0)    // down to the bailey gate
+camera(9,  115, 24, 12,  6,  1,  -2)    // over the palisade: campfire and watchtower
+camera(14, 150, 18, 15, -2,  5,  -1)    // round the keep's moonlit flank
+camera(19, 205, 26, 13, -2,  9.5, -1)   // up to the ruined battlements
+camera(25, 330, 30, 27,  0,  3,   0)    // pull back above it all
+camera(30, 420, 18, 23,  0,  3,   0)    // back to the start (420 = 60 + 360)

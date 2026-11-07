@@ -24,7 +24,9 @@ import Data.Maybe (listToMaybe, fromMaybe)
 import AppState
 import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, cfgAutoCompileDelayMs, IronConfig)
 import AppCore
-import Selection (deleteRange, selectedText)
+import Selection (deleteRange, selectedText, normalisePaste)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 
 -- | Write `code` to `path`, recompile/preview it, and record it in the
 --   recent-files list. Shared by Ctrl+S, the unsaved-changes prompt, and
@@ -506,8 +508,15 @@ handleEditorInput chan ev = do
         -- Inserting text with a selection replaces it.
         VtyEvent (V.EvKey key []) | hasSel, insertsText key ->
             trackEdit chan (deleteSelection >> passToEditor ev)
-        VtyEvent (V.EvPaste _) | hasSel ->
-            trackEdit chan (deleteSelection >> passToEditor ev)
+        -- Terminal paste (bracketed). Insert it ourselves: terminals send
+        -- line breaks as '\r', which the editor widget would silently drop,
+        -- turning a pasted multi-line script into one long line.
+        VtyEvent (V.EvPaste bytes) ->
+            case TE.decodeUtf8' bytes of
+                Left _    -> return ()
+                Right txt -> trackEdit chan $ do
+                    deleteSelection
+                    zoom editorLens $ modify (E.applyEdit (Z.insertMany (normalisePaste (T.unpack txt))))
 
         -- Any other key (plain arrows, Ctrl+K, ...) drops the selection.
         VtyEvent (V.EvKey _ _) -> trackEdit chan (clearSelection >> passToEditor ev)

@@ -13,6 +13,7 @@ module Selection
     , deleteRange
     , lineSelection
     , applySelection
+    , normalisePaste
     ) where
 
 type Pos = (Int, Int)
@@ -89,3 +90,14 @@ applySelection selAttr (Just (from, to, nl)) spans =
                         , (a, drop hi t)
                         ]
         in parts ++ go end rest
+
+-- | Clean up pasted text before inserting it. Terminals send line breaks
+--   as carriage returns (or CR LF from Windows sources), which the editor
+--   widget ignores, so they become newlines. Tabs, which the editor also
+--   ignores, become four spaces.
+normalisePaste :: String -> String
+normalisePaste ('\r' : '\n' : rest) = '\n' : normalisePaste rest
+normalisePaste ('\r' : rest)        = '\n' : normalisePaste rest
+normalisePaste ('\t' : rest)        = "    " ++ normalisePaste rest
+normalisePaste (c : rest)           = c : normalisePaste rest
+normalisePaste []                   = []

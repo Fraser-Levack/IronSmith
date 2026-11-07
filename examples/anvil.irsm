@@ -1,0 +1,19 @@
+// A blacksmith's hammer on the anvil, next to a bar fresh from the forge
+light(1, 1.4, 0.7)
+
+anvil = group(move(0, 0.4, 0, cube(2.4, 0.8, 1.7)),
+              move(0, 1.15, 0, cube(1.1, 0.7, 0.9)),
+              move(-0.2, 1.9, 0, cube(3.2, 0.8, 1.3)),
+              move(-2.05, 2.1, 0, cube(0.5, 0.4, 1)),
+              move(2.15, 2.0, 0, rotateZ(90, cone(0.5, 0.05, 1.7))))
+paint(#1E2126, material(plastic, anvil))
+paint(#15110F, move(0, -0.1, 0, cylinder(3.4, 0.2)))
+
+head = cube(1.5, 0.62, 0.62)
+handle = move(0, 0, 1.75, rotateX(90, cylinder(0.13, 3)))
+paint(#4A4F57, material(plastic, move(-0.7, 2.61, -0.3, rotateY(-25, head))))
+paint(#8B5A2B, move(-0.7, 2.61, -0.3, rotateY(-25, handle)))
+
+material(neon, paint(#C82800, move(0.75, 2.39, 0.2, rotateY(30, cube(1.8, 0.18, 0.32)))))
+material(neon, paint(#FF7A1A, move(1.1, 2.9, 0.4, sphere(0.05)), move(0.6, 3.2, 0.0, sphere(0.04)),
+                              move(1.4, 3.4, 0.1, sphere(0.035)), move(0.9, 3.7, 0.5, sphere(0.03))))
