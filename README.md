@@ -7,6 +7,55 @@
 
 **IronSmith** is a Terminal-based 3D modeling scripting language. It allows you to build complex 3D shapes using code (Constructive Solid Geometry) and view the results instantly via a custom GPU-accelerated raymarching engine.
 
+## 🖼️ Gallery
+
+Every image below is a plain-text `.irsm` script in [`examples/`](./examples), rendered live by the viewer. Open one in the editor, press **Ctrl+A** to play its turntable, and change any number to see it update instantly.
+
+<p align="center">
+  <img src="./docs/gallery/starfighter_spin.gif" alt="Starfighter turntable" width="32%" />
+  <img src="./docs/gallery/robot_spin.gif" alt="Robot turntable" width="32%" />
+  <img src="./docs/gallery/lighthouse_spin.gif" alt="Lighthouse turntable" width="32%" />
+</p>
+
+### 🎬 Camera animation: a launch pad fly-through
+
+<p align="center">
+  <img src="./docs/gallery/launch_pad_flythrough.gif" alt="Launch pad camera fly-through" width="60%" />
+</p>
+
+[`examples/launch_pad.irsm`](./examples/launch_pad.irsm) is a deliberately simple scene. Seven `camera(...)` keyframes turn it into a shot sequence: low at the engines, a crane up to the crew window, the nose cone, a wide reveal, then round the tower and back to the start for a seamless loop.
+
+```
+// camera(time, yaw, pitch, distance, look-at x, y, z)
+camera(0,   30,  3,  9,  0, 2,    0)   // low at the engines
+camera(3,   55,  8,  8,  0, 6,    0)   // crane up the side
+camera(6,   85, 12,  6,  0, 10.5, 0)   // close-up on the crew window
+camera(8,  110, 16,  8,  0, 12.5, 0)   // the nose cone against the sky
+camera(11, 160, 28, 24,  0, 7,    0)   // pull back: the whole pad
+camera(14, 250, 18, 26, -1, 6,    0)   // circle around behind the tower
+camera(17, 390,  3,  9,  0, 2,    0)   // swoop back down (390 = 30 + 360)
+```
+
+Press **Ctrl+A** to play it in the viewer, or **Ctrl+Shift+V** to export it as a video.
+
+### Stills
+
+| | |
+|:---:|:---:|
+| <img src="./docs/gallery/starfighter.png" alt="Starfighter" width="400" /> | <img src="./docs/gallery/robot.png" alt="Robot" width="400" /> |
+| **[Starfighter "Kestrel"](./examples/starfighter.irsm)**: a swept-wing interceptor with glowing engines, over a ringed gas giant that catches the ship's shadow. | **[Bolt the robot](./examples/robot.irsm)**: a friendly little bot waving hello, with a glowing face, chest buttons and a potted flower. |
+| <img src="./docs/gallery/forest_glade.png" alt="Forest glade" width="400" /> | <img src="./docs/gallery/lighthouse.png" alt="Lighthouse island" width="400" /> |
+| **[Forest glade](./examples/forest_glade.irsm)**: pines, oaks and birches around a clearing with a mirror pond, a fairy ring of toadstools, a mossy log and fireflies. | **[Lighthouse island at dusk](./examples/lighthouse.irsm)**: stripes cut with `repeat`, a lit lantern room, the keeper's cottage and a sailboat, all mirrored in a metal sea. |
+| <img src="./docs/gallery/airship.png" alt="Steampunk airship" width="400" /> | |
+| **[Steampunk airship](./examples/airship.irsm)**: a ribbed canvas envelope, brass engines and propellers, a wooden gondola with lit portholes, and clouds below. | |
+
+**Tricks these examples use:**
+- **Stripes:** `intersection(shape, repeat(...))`.
+- **Panel seams and grass caps:** a slightly larger copy of a shape, intersected with a thin slab.
+- **Triangles:** a box cut by a big rotated box.
+- **Reflections:** `material(metal, ...)` for mirror water and glass.
+- **Glows:** `material(neon, ...)` for lights, eyes and fireflies.
+
 ## 🚀 Features
 
 * **Custom Scripting Language:** Write `.irsm` files using a clean, math-focused syntax.

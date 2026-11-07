@@ -116,6 +116,19 @@ regular tiling.
   `material(metal, ...)` sparingly: metal reflects the background.
 - Overlapping shapes in a `group` simply merge; no need to make them meet
   exactly.
+- Rotation directions: `rotateZ(90, ...)` turns +Y towards +X (a cone's tip
+  then points +X; `rotateZ(-90, ...)` points it at -X), and `rotateX(a, ...)`
+  with positive `a` swings a downward-hanging part towards +Z.
+- `metal` is mostly reflection, so a coloured metal (brass, copper) looks
+  like the sky. Use glossy `plastic` with the metal's colour instead.
+- Very thin features on a *non-uniformly scaled* sphere (e.g. a 0.04-thick
+  rib on `scale(7, 2.3, 2.3, sphere(1))`) can be stepped over by the ray
+  marcher and vanish. Use exact shapes for thin details (`torus` rings,
+  thin `cube`s) or make them thicker.
+- Keep everything within about 30 units of the origin: the viewer only
+  marches rays inside a bounding sphere of radius 35 (larger when the
+  camera is further away).
+- See [`examples/`](../examples) for complete, commented scenes.
 
 ## Example
 

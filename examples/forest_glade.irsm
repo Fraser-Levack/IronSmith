@@ -1,0 +1,119 @@
+// Forest glade at golden hour: a ring of trees around a quiet clearing,
+// with a reflecting pond, a fairy ring of toadstools and drifting fireflies.
+// Ground at y = 0; the open side of the clearing faces +X/+Z.
+
+light(0.7, 0.9, 0.45, 1.25)
+
+// ── Ground ─────────────────────────────────────────────
+paint(#3D7A2C, move(0, -0.3, 0, cylinder(16, 0.6)))
+paint(#3B2A1C, move(0, -0.65, 0, cylinder(15.6, 0.5)))
+paint(#5A9A3A, move(1.5, 0.01, 1.5, scale(1.2, 1, 1, cylinder(7.5, 0.04))))
+
+// ── Tree types (each stands on the origin) ────────────
+trunk = cylinder(0.3, 2)
+pine = group(paint(#5B3A22, move(0, 1, 0, trunk)),
+             paint(#245F33, move(0, 2.4, 0, cone(1.9, 2.4)), move(0, 3.8, 0, cone(1.5, 2.1)), move(0, 5.0, 0, cone(1.0, 1.8))))
+darkPine = group(paint(#5B3A22, move(0, 1, 0, trunk)),
+                 paint(#1B4A28, move(0, 2.4, 0, cone(1.8, 2.4)), move(0, 3.8, 0, cone(1.4, 2.1)), move(0, 5.0, 0, cone(0.95, 1.8)), move(0, 6.0, 0, cone(0.55, 1.2))))
+oak = group(paint(#6B4A2E, move(0, 1.5, 0, cylinder(0.42, 3))),
+            paint(#4A9233, move(0, 3.9, 0, sphere(1.8)), move(1.0, 3.4, 0.5, sphere(1.3)), move(-0.9, 3.5, -0.4, sphere(1.4)), move(0.2, 4.8, -0.3, sphere(1.2))))
+birch = group(paint(#ECE8DE, move(0, 1.8, 0, cylinder(0.22, 3.6))),
+              paint(#2B2B2B, move(0, 1.1, 0, cylinder(0.225, 0.08)), move(0, 2.0, 0, cylinder(0.225, 0.06)), move(0, 2.7, 0, cylinder(0.225, 0.1))),
+              paint(#8FC043, move(0, 4.2, 0, scale(1.3, 1.6, 1.3, sphere(1))), move(0.6, 3.6, 0.3, sphere(0.8))))
+bush = paint(#2F6E2A, group(move(0, 0.4, 0, sphere(0.7)), move(0.6, 0.3, 0.2, sphere(0.5)), move(-0.5, 0.3, -0.1, sphere(0.55))))
+
+// ── The tree line, mostly behind the clearing ─────────
+move(-11.5, 0, -5, scale(1.15, pine))
+move(-8.5, 0, -9.5, scale(1.1, rotateY(30, darkPine)))
+move(-4, 0, -12, scale(1.25, rotateY(10, pine)))
+move(1, 0, -12.5, scale(1.0, rotateY(50, darkPine)))
+move(6, 0, -11, scale(1.2, rotateY(20, pine)))
+move(10.5, 0, -7, scale(1.05, rotateY(70, darkPine)))
+move(12.8, 0, -1.5, scale(0.95, pine))
+move(-12.5, 0, 1.5, scale(1.0, rotateY(40, darkPine)))
+move(-10.5, 0, 7.5, scale(0.9, rotateY(15, pine)))
+move(-6.5, 0, -8, scale(1.0, oak))
+move(8.5, 0, -4.5, scale(1.05, rotateY(60, oak)))
+move(-9, 0, 3, scale(1.1, rotateY(120, oak)))
+move(-5, 0, 10.5, scale(1.0, birch))
+move(-2.5, 0, -9.5, scale(0.95, birch))
+move(4.5, 0, -8, scale(1.0, birch))
+move(-6.5, 0, 12, scale(0.9, rotateY(200, oak)))
+move(-13.2, 0, -2, scale(0.85, darkPine))
+move(-7.5, 0, 9.5, scale(0.9, birch))
+move(9.5, 0, 11, bush)
+move(13.5, 0, 1.5, scale(1.2, bush))
+move(-1.5, 0, 12.5, scale(0.9, bush))
+move(-12.5, 0, -1, bush)
+
+// ── Pond: metal reflects the trees and sky ────────────
+pondX = -3
+pondZ = -3
+material(metal, paint(#4C7FA0, move(pondX, 0.03, pondZ, scale(1.35, 1, 1, cylinder(2.8, 0.06)))))
+rock = scale(1, 0.6, 0.85, sphere(1))
+paint(#8E9196,
+    move(0.90, 0.08, -2.41, scale(0.38, rotateY(0, rock))), move(0.17, 0.08, -1.22, scale(0.44, rotateY(47, rock))), move(-1.19, 0.08, -0.37, scale(0.50, rotateY(94, rock))),
+    move(-2.90, 0.08, -0.05, scale(0.38, rotateY(141, rock))), move(-4.64, 0.08, -0.31, scale(0.44, rotateY(8, rock))), move(-6.05, 0.08, -1.10, scale(0.50, rotateY(55, rock))),
+    move(-6.86, 0.08, -2.27, scale(0.38, rotateY(102, rock))), move(-6.90, 0.08, -3.59, scale(0.44, rotateY(149, rock))), move(-6.17, 0.08, -4.78, scale(0.50, rotateY(16, rock))),
+    move(-4.81, 0.08, -5.63, scale(0.38, rotateY(63, rock))), move(-3.10, 0.08, -5.95, scale(0.44, rotateY(110, rock))), move(-1.36, 0.08, -5.69, scale(0.50, rotateY(157, rock))),
+    move(0.05, 0.08, -4.90, scale(0.38, rotateY(24, rock))), move(0.86, 0.08, -3.73, scale(0.44, rotateY(71, rock))))
+// Lily pads with one pink flower
+pad = difference(cylinder(0.42, 0.04), move(0.3, 0, 0, rotateY(45, cube(0.3, 0.2, 0.3))))
+paint(#5C9E48, move(-4.6, 0.09, -2.4, pad), move(-2.2, 0.09, -4.1, rotateY(120, scale(0.8, pad))), move(-1.6, 0.09, -2.0, rotateY(250, scale(1.1, pad))))
+material(plastic, paint(#FF8FB8, move(-4.55, 0.2, -2.45, scale(1, 0.6, 1, sphere(0.16)))))
+
+// ── Fairy ring of toadstools ──────────────────────────
+stem = paint(#F3EAD8, move(0, 0.2, 0, cylinder(0.08, 0.4)))
+cap = material(plastic, paint(#D6352B, intersection(move(0, 0.32, 0, sphere(0.27)), move(0, 0.55, 0, cube(1, 0.45, 1)))))
+spots = paint(#FFF8EE, move(0.1, 0.55, 0.08, sphere(0.045)), move(-0.12, 0.52, 0.05, sphere(0.04)), move(0.02, 0.57, -0.12, sphere(0.04)))
+toadstool = group(stem, cap, spots)
+ringX = 4
+ringZ = 3.5
+move(5.70, 0, 3.50, scale(1.0, toadstool))
+move(5.30, 0, 4.59, scale(0.8, toadstool))
+move(4.30, 0, 5.17, scale(1.2, toadstool))
+move(3.15, 0, 4.97, scale(0.9, toadstool))
+move(2.40, 0, 4.08, scale(1.1, toadstool))
+move(2.40, 0, 2.92, scale(0.75, toadstool))
+move(3.15, 0, 2.03, scale(1.0, toadstool))
+move(4.30, 0, 1.83, scale(1.3, toadstool))
+move(5.30, 0, 2.41, scale(0.85, toadstool))
+// A big one off to the side
+move(7.2, 0, -1.2, scale(2.2, toadstool))
+
+// ── Fallen log with moss ───────────────────────────────
+logShape = rotateY(25, rotateZ(90, cylinder(0.45, 4)))
+paint(#5E4128, move(-1.5, 0.42, 6, logShape))
+paint(#C9A36E, move(-1.5, 0.42, 6, rotateY(25, rotateZ(90, cylinder(0.36, 4.06)))))
+paint(#6E9E3A, move(-1.6, 0.78, 5.95, rotateY(25, scale(1.5, 0.25, 0.4, sphere(1)))))
+
+// ── Stepping stones from the open edge to the pond ────
+stepStone = scale(1, 0.25, 0.8, sphere(0.55))
+paint(#A8A49A, move(10.5, 0.02, 8.5, stepStone), move(8.6, 0.02, 7.0, rotateY(30, stepStone)), move(6.8, 0.02, 5.9, stepStone),
+               move(1.8, 0.02, -0.2, rotateY(60, stepStone)), move(0.4, 0.02, -1.2, stepStone))
+
+// ── Wildflowers ────────────────────────────────────────
+flowerStem = paint(#3E7F32, move(0, 0.15, 0, cylinder(0.025, 0.3)))
+group(move(9, 0, 3, flowerStem), material(plastic, paint(#FF7BAC, move(9, 0.33, 3, sphere(0.1)))))
+group(move(10.2, 0, 4.5, flowerStem), material(plastic, paint(#FFD23F, move(10.2, 0.33, 4.5, sphere(0.1)))))
+group(move(8, 0, 5, flowerStem), material(plastic, paint(#B98CFF, move(8, 0.33, 5, sphere(0.1)))))
+group(move(11, 0, 1.5, flowerStem), material(plastic, paint(#FF7BAC, move(11, 0.33, 1.5, sphere(0.1)))))
+group(move(6, 0, 8.5, flowerStem), material(plastic, paint(#FFD23F, move(6, 0.33, 8.5, sphere(0.1)))))
+group(move(4, 0, 10, flowerStem), material(plastic, paint(#B98CFF, move(4, 0.33, 10, sphere(0.1)))))
+group(move(2.5, 0, 8, flowerStem), material(plastic, paint(#FF7BAC, move(2.5, 0.33, 8, sphere(0.1)))))
+group(move(12, 0, 6, flowerStem), material(plastic, paint(#FFD23F, move(12, 0.33, 6, sphere(0.1)))))
+group(move(0.5, 0, 4.5, flowerStem), material(plastic, paint(#B98CFF, move(0.5, 0.33, 4.5, sphere(0.1)))))
+group(move(-3.5, 0, 4, flowerStem), material(plastic, paint(#FFD23F, move(-3.5, 0.33, 4, sphere(0.1)))))
+group(move(5.5, 0, -4, flowerStem), material(plastic, paint(#FF7BAC, move(5.5, 0.33, -4, sphere(0.1)))))
+group(move(-6.5, 0, 1, flowerStem), material(plastic, paint(#B98CFF, move(-6.5, 0.33, 1, sphere(0.1)))))
+
+// ── Fireflies ──────────────────────────────────────────
+material(neon, paint(#FFC23A,
+    move(3.2, 1.2, 3.0, sphere(0.075)), move(4.8, 1.8, 4.4, sphere(0.075)), move(5.5, 0.9, 2.4, sphere(0.075)), move(2.6, 2.3, 4.2, sphere(0.075)),
+    move(-2, 1.4, -1.0, sphere(0.075)), move(-4.5, 1.1, -4.5, sphere(0.075)), move(-3.4, 2.2, -2.0, sphere(0.075)), move(0.5, 1.6, 1.0, sphere(0.075)),
+    move(6.5, 2.6, 0.5, sphere(0.075)), move(1.0, 2.9, 5.5, sphere(0.075)), move(-1.0, 1.0, 4.0, sphere(0.075)), move(7.8, 1.5, 3.5, sphere(0.075)),
+    move(-5.8, 2.4, -1.2, sphere(0.075)), move(2.0, 3.4, -2.5, sphere(0.075))))
+
+// ── Turntable: press Ctrl+A in the editor to play ────────
+camera(0, 48, 25, 26.0, 0, 1, -1)
+camera(12, 408, 25, 26.0, 0, 1, -1)

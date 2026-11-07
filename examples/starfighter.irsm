@@ -1,0 +1,82 @@
+// Starfighter "Kestrel": a swept-wing interceptor over a ringed gas giant.
+// Nose points +X, the ship floats above the origin.
+
+light(0.8, 1.6, 1.2, 1.1)
+
+// ── Fuselage ───────────────────────────────────────────
+fuselage = scale(4.6, 0.95, 1.25, sphere(1))
+spine = move(-0.8, 0.55, 0, scale(3.2, 0.5, 0.6, sphere(1)))
+nose = move(5.0, 0, 0, rotateZ(90, cone(0.62, 0.05, 2.6)))
+intakeL = move(0.6, -0.35, 1.1, scale(1.8, 0.45, 0.45, sphere(1)))
+intakeR = move(0.6, -0.35, -1.1, scale(1.8, 0.45, 0.45, sphere(1)))
+hull = group(fuselage, spine, nose, intakeL, intakeR)
+
+// Intake mouths cut into the front of the side pods
+mouthL = move(2.35, -0.35, 1.1, scale(0.4, 0.3, 0.3, sphere(1)))
+mouthR = move(2.35, -0.35, -1.1, scale(0.4, 0.3, 0.3, sphere(1)))
+material(plastic, paint(#D9DEE6, difference(hull, group(mouthL, mouthR))))
+paint(#15181D, move(2.2, -0.35, 1.1, scale(0.25, 0.26, 0.26, sphere(1))), move(2.2, -0.35, -1.1, scale(0.25, 0.26, 0.26, sphere(1))))
+
+// ── Cockpit canopy ─────────────────────────────────────
+material(metal, paint(#3A4A63, move(2.1, 0.62, 0, scale(1.7, 0.55, 0.62, sphere(1)))))
+paint(#C8CDD4, move(1.15, 0.9, 0, rotateZ(20, cube(0.12, 0.5, 1.0))))
+
+// ── Swept wings ────────────────────────────────────────
+wingSpan = 4.2
+wing = rotateY(28, cube(2.6, 0.16, wingSpan))
+wingL = move(-1.2, -0.15, 2.4, wing)
+wingR = move(-1.2, -0.15, -2.4, rotateY(-56, wing))
+material(plastic, paint(#D9DEE6, wingL, wingR))
+
+// Orange accent stripes on the wings
+stripe = rotateY(28, cube(0.35, 0.2, wingSpan - 0.4))
+paint(#E2552B, move(-0.55, -0.12, 2.4, stripe), move(-0.55, -0.12, -2.4, rotateY(-56, stripe)))
+
+// Wingtip cannons
+// (a 28-degree sweep puts the wingtip 1 unit back and at z = 4.25)
+cannon = rotateZ(90, cylinder(0.14, 3.4))
+material(metal, paint(#8A9099, move(-1.4, -0.15, 4.25, cannon), move(-1.4, -0.15, -4.25, cannon)))
+material(neon, paint(#FF4D2E, move(0.3, -0.15, 4.25, sphere(0.13)), move(0.3, -0.15, -4.25, sphere(0.13))))
+
+// ── Tail fins ──────────────────────────────────────────
+fin = rotateZ(-35, cube(1.9, 1.7, 0.14))
+paint(#D9DEE6, move(-3.4, 1.15, 0.55, rotateX(-12, fin)), move(-3.4, 1.15, -0.55, rotateX(12, fin)))
+paint(#E2552B, move(-3.95, 1.85, 0.68, rotateX(-12, rotateZ(-35, cube(0.6, 0.35, 0.18)))), move(-3.95, 1.85, -0.68, rotateX(12, rotateZ(-35, cube(0.6, 0.35, 0.18)))))
+
+// ── Engines ────────────────────────────────────────────
+nacelle = rotateZ(90, cylinder(0.62, 2.6))
+nozzle = rotateZ(-90, cone(0.5, 0.66, 0.6))
+material(metal, paint(#5B616B, move(-3.9, -0.1, 0.75, nacelle), move(-3.9, -0.1, -0.75, nacelle)))
+paint(#2B2F36, move(-5.45, -0.1, 0.75, nozzle), move(-5.45, -0.1, -0.75, nozzle))
+material(neon, paint(#3FD0FF, move(-5.75, -0.1, 0.75, rotateZ(90, cylinder(0.42, 0.12))), move(-5.75, -0.1, -0.75, rotateZ(90, cylinder(0.42, 0.12)))))
+material(neon, paint(#9BE8FF, move(-5.85, -0.1, 0.75, sphere(0.22)), move(-5.85, -0.1, -0.75, sphere(0.22))))
+
+// ── Panel lines and details ────────────────────────────
+// Panel seams: thin bands of a slightly larger hull shell
+shell = scale(4.64, 0.99, 1.29, sphere(1))
+paint(#3A3F47, intersection(shell, move(0.2, 0, 0, cube(0.05, 3, 3))), intersection(shell, move(-2.1, 0, 0, cube(0.05, 3, 3))))
+// Navigation lights at the wingtip trailing edges
+material(neon, paint(#7CFF6B, move(-3.1, -0.15, 4.25, sphere(0.14))))
+material(neon, paint(#FF3B3B, move(-3.1, -0.15, -4.25, sphere(0.14))))
+paint(#E2552B, move(3.7, 0.25, 0, cube(0.9, 0.12, 0.9)))
+
+// ── Backdrop: a ringed gas giant and a scatter of stars ─
+pc = 6.5
+planet = move(-12, -12, -7, sphere(pc))
+paint(#C97B4A, planet)
+paint(#E3B07A, intersection(planet, move(-12, -10.6, -7, cube(20, 1.0, 20))), intersection(planet, move(-12, -13.6, -7, cube(20, 0.7, 20))))
+paint(#A85B38, intersection(planet, move(-12, -8.2, -7, cube(20, 0.5, 20))))
+paint(#D8C9A8, move(-12, -12, -7, rotateX(30, rotateZ(-22, scale(1, 0.05, 1, torus(10, 1.4))))))
+star = sphere(0.09)
+material(neon, paint(#FFFFFF,
+    move(-8, 9, -16, star), move(-2, 12, -20, star), move(6, 10, -22, star), move(12, 6, -18, star),
+    move(-18, 4, -10, star), move(-12, 14, -6, star), move(3, 15, -12, star), move(15, 13, -8, star),
+    move(-20, 10, 6, star), move(18, 3, -20, star), move(9, 17, -2, star), move(-4, 6, -24, star),
+    move(-16, -2, -24, star), move(14, -4, -22, star), move(20, 9, 4, star), move(-6, 18, 4, star),
+    move(4, -9, -14, star), move(10, -12, -6, star), move(-2, -14, -10, star), move(16, -7, 2, star),
+    move(-22, -10, 2, star), move(7, -5, -20, star)))
+material(neon, paint(#BFD8FF, move(0, 8, -18, sphere(0.14)), move(-10, 3, -20, sphere(0.12)), move(16, 11, -14, sphere(0.13))))
+
+// ── Turntable: press Ctrl+A in the editor to play ────────
+camera(0, 38, 18, 13.0, -0.8, -1.2, 0)
+camera(8, 398, 18, 13.0, -0.8, -1.2, 0)

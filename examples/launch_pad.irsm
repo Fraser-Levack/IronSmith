@@ -1,0 +1,65 @@
+// Launch pad, T-minus 10 seconds: a simple scene built to show off camera
+// animation. Press Ctrl+A to play the fly-through at the bottom of the file:
+// it starts at the engines, cranes up the rocket to the nose, pulls back for
+// a wide reveal, circles the pad and swoops back down to loop seamlessly.
+// Ground at y = 0, rocket on the origin.
+
+light(0.8, 1.2, 0.6, 1.1)
+
+// ── Ground and pad ─────────────────────────────────────
+paint(#8F826E, move(0, -0.2, 0, cylinder(14, 0.4)))
+padTop = 0.8
+paint(#8D8F94, move(0, padTop / 2, 0, cylinder(5, padTop)))
+paint(#2A2B2F, move(0, padTop, 0, intersection(cylinder(4.98, 1), cube(2.4, 0.04, 10))))
+material(plastic, paint(#F2C230, move(0, padTop + 0.01, 0, scale(1, 0.2, 1, torus(4.6, 0.12)))))
+
+// ── Rocket ─────────────────────────────────────────────
+base = 1.6
+stage1 = move(0, base + 3, 0, cylinder(1, 6))
+interstage = move(0, base + 6.25, 0, cone(1, 0.8, 0.5))
+stage2 = move(0, base + 8.25, 0, cylinder(0.8, 3.5))
+material(plastic, paint(#EEF0F3, stage1, interstage, stage2))
+paint(#24262B, move(0, base + 5.7, 0, cylinder(1.02, 0.5)), move(0, base + 10.7, 0, cylinder(0.82, 0.25)))
+material(plastic, paint(#D23B2E, move(0, base + 0.6, 0, cylinder(1.02, 0.35)), move(0, base + 11.2, 0, cone(0.8, 2.4))))
+
+// Fins
+finZ = cube(0.12, 1.8, 0.9)
+finX = cube(0.9, 1.8, 0.12)
+material(plastic, paint(#D23B2E, move(0, base + 0.9, 1.35, finZ), move(0, base + 0.9, -1.35, finZ), move(1.35, base + 0.9, 0, finX), move(-1.35, base + 0.9, 0, finX)))
+
+// Crew window facing the camera's close-up
+material(neon, paint(#8FD8FF, move(0.78, base + 8.6, 0, rotateZ(90, cylinder(0.26, 0.1)))))
+paint(#24262B, move(0.77, base + 8.6, 0, rotateZ(90, cylinder(0.34, 0.08))))
+
+// Engine bell with the glow of ignition and billowing smoke
+material(plastic, paint(#4A4D55, move(0, base - 0.4, 0, cone(0.75, 0.42, 0.8))))
+material(neon, paint(#FF8A2B, move(0, padTop + 0.05, 0, scale(1, 0.3, 1, sphere(0.9)))))
+material(neon, paint(#FFD36B, move(0, padTop + 0.15, 0, scale(1, 0.4, 1, sphere(0.45)))))
+smoke = sphere(1)
+paint(#D9D5CE, move(1.9, 1.05, 1.2, scale(0.5, smoke)), move(-1.3, 1.0, 1.9, scale(0.6, smoke)), move(0.9, 1.0, -2.0, scale(0.45, smoke)),
+                              move(-2.0, 1.1, -1.0, scale(0.65, smoke)), move(2.6, 1.15, -1.0, scale(0.7, smoke)), move(0.2, 1.1, 2.6, scale(0.55, smoke)),
+                              move(-2.7, 1.3, 1.0, scale(0.75, smoke)), move(3.3, 1.35, 0.6, scale(0.6, smoke)))
+
+// ── Launch tower: a hollow square tube with windows cut by repeat ──
+towerH = 14
+lattice = difference(cube(1.4, towerH, 1.4),
+                     group(cube(1.1, towerH + 1, 1.1),
+                           repeat(0, 1.4, 0, cube(3, 1.1, 1.1)),
+                           repeat(0, 1.4, 0, cube(1.1, 1.1, 3))))
+material(plastic, paint(#C8462E, move(-3.4, padTop + towerH / 2, 0, lattice)))
+paint(#5A5D63, move(-2.0, base + 8.6, 0, cube(2.3, 0.25, 0.4)), move(-2.1, base + 4.4, 0, cube(2.5, 0.25, 0.4)))
+material(neon, paint(#FF3B30, move(-3.4, padTop + towerH + 0.3, 0, sphere(0.25))))
+material(neon, paint(#FFF4D6, move(-2.65, padTop + 5, 0.75, sphere(0.1)), move(-2.65, padTop + 9, -0.75, sphere(0.1)), move(-2.65, padTop + 12.5, 0.75, sphere(0.1))))
+
+// ── Camera fly-through ─────────────────────────────────
+// camera(time, yaw, pitch, distance, look-at x, y, z): angles in degrees.
+// Positions are blended linearly between keyframes, and the last time
+// sets the loop length. The final key repeats the first (yaw + 360) so
+// the loop is seamless.
+camera(0,   30,  3,  9,  0, 2,    0)   // low at the engines
+camera(3,   55,  8,  8,  0, 6,    0)   // crane up the side
+camera(6,   85, 12,  6,  0, 10.5, 0)   // close-up on the crew window
+camera(8,  110, 16,  8,  0, 12.5, 0)   // the nose cone against the sky
+camera(11, 160, 28, 24,  0, 7,    0)   // pull back: the whole pad
+camera(14, 250, 18, 26, -1, 6,    0)   // circle around behind the tower
+camera(17, 390,  3,  9,  0, 2,    0)   // swoop back down to the start

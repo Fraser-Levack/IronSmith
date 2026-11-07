@@ -1,0 +1,87 @@
+// Steampunk airship "The Gilded Gull" cruising above the clouds.
+// Bow points +X; the envelope floats at y = 7.
+
+light(0.6, 1.4, 0.8, 1.15)
+
+// ── Envelope (balloon) with stitched ribs ──────────────
+envY = 7
+envelope = move(0, envY, 0, scale(7, 2.3, 2.3, sphere(1)))
+material(plastic, paint(#D9B38C, envelope))
+// Stitched ribs: exact torus rings sized to the envelope's profile
+// (radius 2.3 * sqrt(1 - (x / 7)^2) at each station)
+paint(#7A5236, move(-5.25, envY, 0, rotateZ(90, torus(1.521, 0.07))),
+               move(-3.5, envY, 0, rotateZ(90, torus(1.992, 0.07))),
+               move(-1.75, envY, 0, rotateZ(90, torus(2.227, 0.07))),
+               move(0, envY, 0, rotateZ(90, torus(2.300, 0.07))),
+               move(1.75, envY, 0, rotateZ(90, torus(2.227, 0.07))),
+               move(3.5, envY, 0, rotateZ(90, torus(1.992, 0.07))),
+               move(5.25, envY, 0, rotateZ(90, torus(1.521, 0.07))))
+belly = intersection(move(0, envY, 0, scale(7.05, 2.34, 2.34, sphere(1))), move(0, envY, 0, cube(16, 0.18, 6)))
+paint(#7A5236, belly)
+// Brass nose cap and tail cone
+material(plastic, paint(#C9A04A, move(6.9, envY, 0, sphere(0.45)), move(-6.95, envY, 0, rotateZ(90, cone(0.5, 0.05, 0.9)))))
+
+// ── Tail fins ──────────────────────────────────────────
+finV = rotateZ(-30, cube(2.4, 2.4, 0.14))
+finH = rotateY(30, cube(2.4, 0.14, 2.4))
+material(plastic, paint(#8E2F2A, move(-5.9, envY + 1.9, 0, finV), move(-5.9, envY - 1.9, 0, rotateX(180, finV)),
+                               move(-5.9, envY, 1.9, finH), move(-5.9, envY, -1.9, rotateX(180, finH))))
+material(plastic, paint(#C9A04A, move(-5.95, envY + 3.05, 0, sphere(0.14)), move(-5.95, envY - 3.05, 0, sphere(0.14))))
+
+// ── Gondola ────────────────────────────────────────────
+gY = 2.9
+hull = intersection(scale(3.4, 1.2, 1.15, sphere(1)), move(0, -0.6, 0, cube(8, 1.2, 3)))
+paint(#7B4F2E, move(0, gY, 0, hull))
+paint(#5A3920, move(0, gY - 0.35, 0, intersection(scale(3.42, 1.2, 1.17, sphere(1)), repeat(0, 0.3, 0, cube(8, 0.04, 3)))))
+paint(#C99C66, move(0, gY + 0.02, 0, scale(3.3, 0.05, 1.08, sphere(1))))
+// Cabin with portholes
+paint(#E8DCC2, move(-0.3, gY + 0.65, 0, cube(3.6, 1.25, 1.6)))
+material(plastic, paint(#8E2F2A, move(-0.3, gY + 1.4, 0, cube(3.9, 0.25, 1.9))))
+porthole = rotateX(90, cylinder(0.2, 1.7))
+material(neon, paint(#FFC46B, move(-1.5, gY + 0.7, 0, porthole), move(-0.7, gY + 0.7, 0, porthole), move(0.1, gY + 0.7, 0, porthole), move(0.9, gY + 0.7, 0, porthole)))
+ring = rotateX(90, torus(0.22, 0.05))
+material(plastic, paint(#C9A04A, move(-1.5, gY + 0.7, 0.82, ring), move(-0.7, gY + 0.7, 0.82, ring), move(0.1, gY + 0.7, 0.82, ring), move(0.9, gY + 0.7, 0.82, ring),
+                             move(-1.5, gY + 0.7, -0.82, ring), move(-0.7, gY + 0.7, -0.82, ring), move(0.1, gY + 0.7, -0.82, ring), move(0.9, gY + 0.7, -0.82, ring)))
+// Brass deck rail and bow lantern
+material(plastic, paint(#C9A04A, move(2.5, gY + 0.45, 0, scale(1, 1, 1.3, torus(0.7, 0.04)))))
+material(neon, paint(#FFE38A, move(3.4, gY + 0.2, 0, sphere(0.18))))
+
+// Funnel with drifting smoke
+material(plastic, paint(#C9A04A, move(-1.4, gY + 2.0, 0, cylinder(0.22, 1.3))))
+paint(#2C2622, move(-1.4, gY + 2.7, 0, cylinder(0.28, 0.15)))
+paint(#B8B2AA, move(-1.7, gY + 3.15, 0, sphere(0.28)), move(-2.3, gY + 3.4, 0.1, sphere(0.36)), move(-3.1, gY + 3.55, -0.05, sphere(0.44)))
+
+// ── Rigging between gondola and envelope ───────────────
+rope = cylinder(0.035, 2.6)
+paint(#3B2B1E, move(2.2, 4.75, 0.7, rotateX(-12, rotateZ(20, rope))), move(2.2, 4.75, -0.7, rotateX(12, rotateZ(20, rope))),
+               move(-2.4, 4.75, 0.7, rotateX(-12, rotateZ(-20, rope))), move(-2.4, 4.75, -0.7, rotateX(12, rotateZ(-20, rope))),
+               move(0, 4.75, 0.8, rotateX(-14, rope)), move(0, 4.75, -0.8, rotateX(14, rope)))
+
+// ── Side engines with propellers ───────────────────────
+engine = group(rotateZ(90, cylinder(0.35, 1.6)), move(0.85, 0, 0, sphere(0.36)))
+material(plastic, paint(#C9A04A, move(-0.8, gY + 0.3, 2.3, engine), move(-0.8, gY + 0.3, -2.3, engine)))
+paint(#5A3920, move(-0.4, gY + 0.3, 1.6, cube(0.25, 0.18, 1.1)), move(-0.4, gY + 0.3, -1.6, cube(0.25, 0.18, 1.1)))
+blade = scale(0.06, 0.65, 0.16, sphere(1))
+prop = group(move(0, 0.55, 0, blade), rotateX(120, move(0, 0.55, 0, blade)), rotateX(240, move(0, 0.55, 0, blade)), sphere(0.1))
+paint(#6B4A30, move(-1.7, gY + 0.3, 2.3, rotateX(15, prop)), move(-1.7, gY + 0.3, -2.3, rotateX(70, prop)))
+// Big stern propeller on the gondola
+paint(#6B4A30, move(-3.6, gY - 0.1, 0, rotateX(40, scale(1.5, prop))))
+material(plastic, paint(#C9A04A, move(-3.3, gY - 0.1, 0, rotateZ(90, cylinder(0.08, 0.6)))))
+
+// Pennant on the tail
+material(plastic, paint(#2E5E8E, move(-7.2, envY + 2.2, 0, cube(0.9, 0.35, 0.04))))
+paint(#3B2B1E, move(-6.75, envY + 1.9, 0, cylinder(0.03, 1.2)))
+
+// ── Clouds ─────────────────────────────────────────────
+cloud = group(sphere(1.2), move(1.1, -0.2, 0.3, sphere(0.95)), move(-1.2, -0.25, -0.2, sphere(0.9)), move(0.3, 0.5, -0.4, sphere(0.9)), move(-0.4, -0.3, 0.8, sphere(0.8)))
+material(plastic, paint(#FBFBFF, move(-6, -1.5, 2, scale(1.6, 0.8, 1.3, cloud)), move(-11, 1.5, -5, scale(1.8, 0.8, 1.4, cloud)),
+                               move(-3, 0.5, -9, scale(1.5, 0.8, 1.2, cloud)), move(6, -1.8, -6, scale(1.7, 0.7, 1.4, cloud)),
+                               move(-15, 4.5, 4, scale(1.1, 0.7, 1, cloud)), move(4, 2.5, -14, scale(1.4, 0.7, 1.1, cloud))))
+// Birds in the distance
+wingSeg = cube(0.45, 0.04, 0.1)
+bird = group(move(-0.2, 0.08, 0, rotateZ(-25, wingSeg)), move(0.2, 0.08, 0, rotateZ(25, wingSeg)))
+paint(#3B3530, move(9, 9, -3, rotateY(40, bird)), move(10.5, 9.8, -1.5, rotateY(30, scale(0.8, bird))), move(8, 10.5, -4.5, rotateY(50, scale(0.7, bird))))
+
+// ── Turntable: press Ctrl+A in the editor to play ────────
+camera(0, 55, 10, 16.0, -0.3, 5.2, 0)
+camera(10, 415, 10, 16.0, -0.3, 5.2, 0)
