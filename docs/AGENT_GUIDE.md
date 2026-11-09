@@ -96,6 +96,91 @@ There are **no loops, functions or conditionals**: write repeated parts
 out, using variables for shared dimensions, or use `repeat(...)` for
 regular tiling.
 
+## Filters
+
+A filter is a post-processing pass over the finished image. It is a `.glsl`
+file in the viewer's filters folder, and it affects renders as well as the
+live window:
+
+- Windows: `%APPDATA%\ironsmith\filters`
+- Linux / macOS: `~/.config/ironsmith/filters`
+
+The viewer installs `passthrough`, `edge_detection`, `heatmap` and `ascii`
+there. These are the user's files: add new ones, but don't overwrite existing
+ones without asking.
+
+### Writing one
+
+A filter defines one function, and the file name (letters, digits, `_`, `-`)
+is its name:
+
+```glsl
+vec4 apply(vec2 uv) {
+    // uv            0..1 screen position
+    // scene(uv)     vec4, the finished image at uv (already gamma-corrected)
+    // luma(rgb)     float, perceptual brightness
+    // u_resolution  vec2, window size in pixels
+    // u_time        float, seconds since the viewer launched
+    return scene(uv);
+}
+```
+
+The filter only sees colour. There is no depth or normal buffer, so an edge
+exists only where brightness changes.
+
+### Rendering with a filter
+
+`ironsmith render` has no filter option. There are two ways to choose one:
+
+- `filter = NAME` under `[viewer]` in `ironsmith.toml`. `render` applies this
+  only when it starts a new viewer. A viewer that is already running keeps its
+  current filter.
+- Send `CMD:SET_FILTER:NAME` to the viewer on `127.0.0.1:7878`. This changes
+  the running viewer and leaves the user's config alone. Use `none` to turn
+  filters off.
+
+```python
+import socket, time
+s = socket.create_connection(("127.0.0.1", 7878))
+s.sendall(b"CMD:SET_FILTER:heatmap")
+s.close()
+time.sleep(2.5)  # the filter compiles in the background
+```
+
+Then run `ironsmith render` as usual. The viewer must already be running, so
+do one render first if it isn't.
+
+- **Check that it compiled.** A filter that fails, or a name that doesn't
+  exist, is not reported to the client: the previous filter stays active and
+  `render` still succeeds. Look for `Filter shader rejected` or
+  `Unknown filter` in `forge.log`, next to the `filters` folder, and look at
+  the PNG.
+- **Turn it off afterwards.** The filter stays active for every later render
+  and in the user's window until it is changed, so send `CMD:SET_FILTER:none`.
+- **Window size matters.** Filters measured in pixels, such as dot, character
+  or cell sizes, look coarser in a smaller window.
+
+### Building a model for a filter
+
+Design the model around what the filter reads:
+
+- Rendered colour is `pow(colour, 0.4545)`, after lighting. `matte` is
+  `paint * (diffuse + 0.1)`. `neon` is `paint * 1.8` and ignores lighting, so
+  it is how to get an exact, flat value, but its hex values look much darker
+  than they render. `#8F2E06` comes out bright orange.
+- To reach a target brightness `v` with neon, paint `pow(v, 2.2) / 1.8`.
+- The background is not black by default. For a true black, surround the scene
+  with a `neon` `#000000` shell and cut a hole on the light's side so it casts
+  no shadow.
+- Brightness-driven filters (`heatmap`, `ascii`): use `neon` steps to place
+  each part on the ramp.
+- Edge filters: use hard shapes, and give touching parts different tones.
+- Cell filters (`ascii`, pixel or mosaic effects): small detail disappears.
+  Use one bold silhouette and large areas of colour, and avoid specular
+  highlights, which read as stray bright cells.
+- Black parts vanish under filters that draw dark outlines. Use a very dark
+  colour instead.
+
 ## Conventions and tips
 
 - **Y is up.** Put the ground at `y = 0` and give models a front that

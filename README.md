@@ -169,6 +169,12 @@ Coordinates: **Y is up**. `cube` takes full sizes (not half-extents), and `cylin
 
 > **Upgrading from 0.x:** `difference(a, b)` used to mean "b minus a". In 1.0 it means "a minus b", like other CSG tools. Run `python scripts/migrate_difference.py model.irsm [more.irsm ...]` to swap the arguments in existing models (each original is kept as a `.bak`); migrated models render exactly as before.
 
+## More Documentation
+
+See documentation website: 
+
+[https://ironsmith-modeler-docs.vercel.app/](https://ironsmith-modeler-docs.vercel.app/)
+
 ## 🤖 Command Line & AI Agents
 
 The `ironsmith` binary doubles as a headless CLI, so scripts and AI agents (Claude Code, Codex, ...) can build models from a plain-text description and check their own work:
