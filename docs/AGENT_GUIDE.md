@@ -219,9 +219,10 @@ Design the model around what the filter reads:
   rib on `scale(7, 2.3, 2.3, sphere(1))`) can be stepped over by the ray
   marcher and vanish. Use exact shapes for thin details (`torus` rings,
   thin `cube`s) or make them thicker.
-- Keep everything within about 30 units of the origin: the viewer only
-  marches rays inside a bounding sphere of radius 35 (larger when the
-  camera is further away).
+- Keep everything within about 30 units of the origin when you can: the
+  viewer only marches rays inside a bounding sphere of radius 35 (larger
+  when the camera is further away, so `render` still shows bigger models).
+  Exports reach 100 units from the origin; anything beyond is clipped.
 - See [`examples/`](../examples) for complete, commented scenes.
 
 ## Example

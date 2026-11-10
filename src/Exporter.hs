@@ -393,9 +393,17 @@ orient (p0,p1,p2) outward =
 -- ─── BOUNDS ────────────────────────────────────────────────────────────────────
 
 -- | Half-size of the cube (centred on the origin) that is searched for the
---   model. Matches the raymarcher's `scene_radius` in core.glsl.
+--   model. Anything outside it is clipped from exports. The sampling grid
+--   is fitted to the model, so a big search cube costs no detail.
 exportRadius :: Float
-exportRadius = 25.0
+exportRadius = 100.0
+
+-- | How many times 'sdfBounds' re-scans its box after the first coarse
+--   scan. Each pass shrinks the scan cell to ~1/32 of the box, so the
+--   bounds end up within a few percent of the model even for a tiny model
+--   in the big search cube.
+boundingRefinePasses :: Int
+boundingRefinePasses = 3
 
 -- | Grid resolution used for the quick bounding-box scans below. Coarse is
 --   fine here - it just needs to find roughly where the model sits.
@@ -405,7 +413,7 @@ boundingScanResolution = 32
 -- | Approximate axis-aligned bounds (min corner, max corner) of a compiled
 --   scene, limited to the cube of half-size 'exportRadius'. Nothing if the
 --   scene draws nothing. A coarse scan of the whole cube finds the model,
---   then a second scan of just that region tightens the box to a few
+--   then repeated scans of just that region tighten the box to a few
 --   percent of the model's size. The CLI uses this to frame renders, and
 --   the exporters fit their sampling grid to it.
 estimateBounds :: [Float] -> Maybe (Vec3, Vec3)
@@ -417,8 +425,14 @@ sdfBounds :: (Vec3 -> Float) -> Maybe (Vec3, Vec3)
 sdfBounds sdf = do
     let whole = ((-exportRadius, -exportRadius, -exportRadius), (exportRadius, exportRadius, exportRadius))
     coarse <- scanBounds sdf whole
-    scanBounds sdf (grow (scanCell whole) coarse)
+    return (refine boundingRefinePasses (scanCell whole) coarse)
   where
+    -- `box` is accurate to within `d`: search a box that much bigger.
+    refine :: Int -> Float -> (Vec3, Vec3) -> (Vec3, Vec3)
+    refine 0 _ box = box
+    refine n d box =
+        let search = grow d box
+        in maybe box (refine (n - 1) (scanCell search)) (scanBounds sdf search)
     grow d ((x0,y0,z0), (x1,y1,z1)) = ((x0-d, y0-d, z0-d), (x1+d, y1+d, z1+d))
 
 -- | Bounds of the sample points within one cell of the surface, on a

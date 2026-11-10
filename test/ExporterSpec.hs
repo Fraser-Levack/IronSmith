@@ -145,6 +145,17 @@ spec = do
                     [close x0 1, close y0 1, close z0 (-3), close x1 3, close y1 5, close z1 3]
                         `shouldBe` replicate 6 True
 
+        it "finds models bigger than the viewer's default scene" $ do
+            -- a 60-unit tower standing on the ground: y 0..60
+            let bc = compileToBytecode (0, 0, 0)
+                        [Draw (Move (Lit 0) (Lit 30) (Lit 0) (Cube (Lit 4) (Lit 60) (Lit 4)))]
+            case estimateBounds bc of
+                Nothing -> expectationFailure "expected bounds"
+                Just ((_, y0, _), (_, y1, _)) -> do
+                    -- conservative by up to one scan cell (1/32 of the size)
+                    y0 `shouldSatisfy` (\y -> abs y < 2.5)
+                    y1 `shouldSatisfy` (\y -> abs (y - 60) < 2.5)
+
         it "returns Nothing for an empty scene" $
             estimateBounds (compileToBytecode (0, 0, 0) []) `shouldBe` Nothing
 
