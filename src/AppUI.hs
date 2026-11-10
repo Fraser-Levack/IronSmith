@@ -104,7 +104,7 @@ drawEditor st = ui
         Just f  -> " " ++ takeFileName f ++ dirtyMarker ++ " "
 
     statusWidget = case _exportProgress st of
-        Just p  -> withAttr (attrName "title") $ str ("Exporting to .OBJ... " ++ progressBarText p)
+        Just p  -> withAttr (attrName "title") $ str ("Exporting mesh... " ++ progressBarText p)
         Nothing -> case _status st of
             Normal            -> withAttr (attrName "success") $ str "Status: OK"
             Saved             -> withAttr (attrName "saved")   $ str "Status: FILE SAVED SUCCESSFULLY"

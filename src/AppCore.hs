@@ -18,7 +18,7 @@ import Text.Megaparsec.Pos (sourceLine, unPos)
 import AST
 import Parser
 import Evaluator
-import Exporter (exportToOBJ)
+import Exporter (exportToOBJ, exportToGLB)
 import Config
 
 import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, Inherit, NoStream), terminateProcess)
@@ -318,3 +318,14 @@ exportModelToOBJ defaultColor code objPath resolution report =
             let bytecode = compileToBytecode defaultColor astScript
             exportToOBJ bytecode objPath resolution report
             return $ Right objPath
+-- | Same as 'exportModelToOBJ', but writes a binary glTF (.glb) mesh that
+--   keeps each shape's paint colour and material (for three.js etc.).
+exportModelToGLB :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
+exportModelToGLB defaultColor code glbPath resolution report =
+    case parseAndValidate code of
+        Left err -> return (Left err)
+
+        Right astScript -> do
+            let bytecode = compileToBytecode defaultColor astScript
+            exportToGLB bytecode glbPath resolution report
+            return $ Right glbPath

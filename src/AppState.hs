@@ -73,7 +73,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdExportGLB | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -85,6 +85,7 @@ commandConfigKey CmdSettings       = "settings"
 commandConfigKey CmdCycleViewMode  = "cycle_view_mode"
 commandConfigKey CmdResetCamera    = "reset_camera"
 commandConfigKey CmdExportOBJ      = "export_obj"
+commandConfigKey CmdExportGLB      = "export_glb"
 commandConfigKey CmdCycleFilter    = "cycle_filter"
 commandConfigKey CmdToggleAnimation = "toggle_animation"
 commandConfigKey CmdExportVideo    = "export_video"
@@ -103,6 +104,7 @@ commandLabel CmdSettings        = "Open Settings"
 commandLabel CmdCycleViewMode   = "Cycle Viewer Mode"
 commandLabel CmdResetCamera     = "Reset Camera"
 commandLabel CmdExportOBJ        = "Export to .OBJ"
+commandLabel CmdExportGLB        = "Export to .GLB (with colours, for three.js)"
 commandLabel CmdCycleFilter      = "Cycle Filter"
 commandLabel CmdToggleAnimation  = "Play/Stop Animation"
 commandLabel CmdExportVideo      = "Export Animation Video"

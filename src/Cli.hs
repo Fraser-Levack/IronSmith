@@ -11,7 +11,8 @@ import Data.List (isPrefixOf, intercalate)
 import Data.Maybe (fromMaybe)
 import System.Directory (makeAbsolute, doesFileExist)
 import System.Exit (ExitCode(..), exitWith)
-import System.FilePath (replaceExtension)
+import System.FilePath (replaceExtension, takeExtension)
+import Data.Char (toLower)
 import System.IO (hPutStrLn, stderr)
 import Text.Megaparsec (parse, errorBundlePretty)
 import Text.Read (readMaybe)
@@ -33,8 +34,9 @@ usage = unlines
     , "  ironsmith check  FILE.irsm             validate a script"
     , "  ironsmith render FILE.irsm [-o OUT.png] [--view YAW,PITCH,DIST[,X,Y,Z]]"
     , "                                         render a still image in the viewer"
-    , "  ironsmith export FILE.irsm [-o OUT.obj] [--res N]"
-    , "                                         export a Wavefront OBJ mesh"
+    , "  ironsmith export FILE.irsm [-o OUT.obj|OUT.glb] [--format obj|glb] [--res N]"
+    , "                                         export a mesh: OBJ (geometry only) or"
+    , "                                         GLB/glTF (keeps paint colours + materials)"
     , "  ironsmith help                         show this help"
     , ""
     , "render: starts the viewer if it isn't running (and leaves it open so"
@@ -42,7 +44,8 @@ usage = unlines
     , "  shader has compiled before saving. --view angles are in degrees;"
     , "  without it the camera frames the whole model from the front-right."
     , "  The viewer window's size sets the image size."
-    , "Outputs default to the input path with a .png / .obj extension."
+    , "export: the format comes from --format, else the -o extension, else obj."
+    , "Outputs default to the input path with a .png / .obj / .glb extension."
     , ""
     , "Exit codes: 0 ok, 1 script error, 2 bad usage, 3 viewer/IO failure."
     ]
@@ -67,7 +70,14 @@ runCli args = case args of
         res <- case lookup "--res" o of
             Nothing -> return Nothing
             Just r -> maybe (usageError ("bad --res '" ++ r ++ "'")) (return . Just) (readMaybe r)
-        export file (lookup "-o" o) res
+        fmt <- case map toLower <$> lookup "--format" o of
+            Just "obj" -> return "obj"
+            Just "glb" -> return "glb"
+            Just f     -> usageError ("bad --format '" ++ f ++ "' (expected obj or glb)")
+            Nothing    -> return $ case map toLower . takeExtension <$> lookup "-o" o of
+                              Just ".glb" -> "glb"
+                              _           -> "obj"
+        export fmt file (lookup "-o" o) res
     _ -> usageError ("unknown command: " ++ unwords args)
 
 -- ─── COMMANDS ───────────────────────────────────────────────────────────────
@@ -106,14 +116,16 @@ render file out view = do
             Left (e :: SomeException) -> failWith 3 ("cannot reach the viewer: " ++ show e)
             Right () -> return ()
 
-export :: FilePath -> Maybe FilePath -> Maybe Int -> IO ()
-export file out res = do
+-- | Export a mesh; `fmt` is "obj" or "glb".
+export :: String -> FilePath -> Maybe FilePath -> Maybe Int -> IO ()
+export fmt file out res = do
     _ <- loadScript file
     code <- readFile file
     cfg <- getConfigPath >>= loadConfig
-    outPath <- makeAbsolute (fromMaybe (replaceExtension file "obj") out)
+    outPath <- makeAbsolute (fromMaybe (replaceExtension file fmt) out)
     let resolution = fromMaybe (cfgExportResolution cfg) res
-    result <- exportModelToOBJ (cfgDefaultObjectColor cfg) code outPath resolution (\_ -> return ())
+    let exporter = if fmt == "glb" then exportModelToGLB else exportModelToOBJ
+    result <- exporter (cfgDefaultObjectColor cfg) code outPath resolution (\_ -> return ())
     case result of
         Right p -> putStrLn ("OK: wrote " ++ p ++ " (resolution " ++ show resolution ++ ")")
         Left (e, line) -> failWith 1 (file ++ ":" ++ show line ++ ": " ++ e)
@@ -185,7 +197,7 @@ withOptions opts k = go opts []
   where
     go [] acc = k acc
     go (flag : value : rest) acc
-        | flag `elem` ["-o", "--view", "--res"] = go rest ((flag, value) : acc)
+        | flag `elem` ["-o", "--view", "--res", "--format"] = go rest ((flag, value) : acc)
     go (flag : _) _ = usageError ("unexpected argument: " ++ flag)
 
 usageError :: String -> IO a

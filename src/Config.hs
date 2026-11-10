@@ -40,6 +40,7 @@ defaultKeybindings =
     , ("cycle_view_mode",  "ctrl+e")
     , ("reset_camera",     "ctrl+r")
     , ("export_obj",       "ctrl+shift+e")
+    , ("export_glb",       "ctrl+shift+g")
     , ("cycle_filter",     "ctrl+f")
     , ("toggle_animation", "ctrl+a")
     , ("export_video",     "ctrl+shift+v")
@@ -140,7 +141,7 @@ defaultConfigText = unlines $
     , ""
     , "[export]"
     , ""
-    , "# Grid cells per axis when exporting to .obj. Higher values produce"
+    , "# Grid cells per axis when exporting meshes (.obj / .glb). Higher values produce"
     , "# much more detailed meshes but take significantly longer to export"
     , "# and produce larger files."
     , "# Recommended range: 64 (fast preview) - 256 (high detail, slow)"

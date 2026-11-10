@@ -183,10 +183,50 @@ The `ironsmith` binary doubles as a headless CLI, so scripts and AI agents (Clau
 ironsmith check  car.irsm                       # validate: prints OK, or file:line: error
 ironsmith render car.irsm -o car.png            # render a still in the viewer (auto-framed)
 ironsmith render car.irsm --view -135,20,11     # yaw,pitch,dist in degrees [,x,y,z target]
-ironsmith export car.irsm -o car.obj --res 128  # mesh export
+ironsmith export car.irsm -o car.obj --res 128  # mesh export (geometry only)
+ironsmith export car.irsm -o car.glb            # mesh export with colours + materials
 ```
 
 `render` starts the viewer if needed and leaves it open, so repeated renders take a fraction of a second. Exit codes: `0` ok, `1` script error, `2` bad usage, `3` viewer/IO failure. See [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) for the agent workflow and modelling tips.
+
+## 📦 Mesh Export (.obj / .glb)
+
+IronSmith meshes your SDF scene on the CPU and writes it next to your `.irsm` file:
+
+| Format | TUI shortcut | CLI | Keeps colours? |
+|---|---|---|---|
+| Wavefront `.obj` | `Ctrl+Shift+E` | `ironsmith export model.irsm` | No (geometry only) |
+| Binary glTF `.glb` | `Ctrl+Shift+G` | `ironsmith export model.irsm --format glb` (or `-o model.glb`) | **Yes** |
+
+Both are in the command palette too (`Ctrl+P`). `export_resolution` in `ironsmith.toml` (default 128), or `--res N` on the CLI, sets the detail for both: the number of sampling cells across the model's longest side. The grid is fitted to the model, so a small part gets the same detail as a whole scene. Both formats are indexed (vertices are shared between triangles), which keeps files compact.
+
+The `.glb` export keeps everything `paint()` and `material()` set. Triangles that share a colour and material become one glTF primitive, and each gets a PBR material that approximates how the viewer shows it:
+
+| `.irsm` material | glTF material |
+|---|---|
+| `matte` | roughness 1.0, metallic 0 |
+| `plastic` | roughness 0.35, metallic 0 |
+| `neon` | emissive in its paint colour |
+| `metal` | metallic 1.0, roughness 0.2 |
+
+Materials are named after their type and colour (e.g. `metal #ff0000`), so they're easy to find and override in code. Normals come from the SDF gradient, so curved surfaces shade smoothly. The faces left by `difference` take the colour of the shape being cut, just like in the viewer. Painting the cutter does not colour the hole; to give a hole a different colour, put a painted shape inside it (see the tips in [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)).
+
+### Using a `.glb` in three.js
+
+```js
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+new GLTFLoader().load('model.glb', (gltf) => {
+  scene.add(gltf.scene);
+  // Optional: restyle a part by its material name
+  gltf.scene.traverse((o) => {
+    if (o.isMesh && o.material.name.startsWith('metal')) o.material.roughness = 0.1;
+  });
+});
+```
+
+Add some lights (or an environment map for `metal` to reflect) to the three.js scene. Neon parts glow without any. Coordinates match the viewer (Y up), and units are your `.irsm` units.
 
 ## 🎬 Animation & Video Export
 
@@ -250,6 +290,8 @@ Drop the file in the folder and it's instantly part of the `Ctrl+F` cycle. Filte
 [x] Material and color parsing
 
 [x] Exporting generated SDFs to .obj meshes
+
+[x] Coloured mesh export to .glb (glTF) for three.js / Blender
 
 [x] Camera animation keyframes with looping playback
 

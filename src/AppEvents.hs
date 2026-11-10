@@ -300,22 +300,10 @@ runCommand _ CmdOpenFile = do
     st <- get
     put (st { _mode = OpenDialog, _status = Normal, _openInput = E.editor OpenEditor (Just 1) "" })
 
-runCommand chan CmdExportOBJ = do
-    st <- get
-    case _currentFile st of
-        Nothing -> put (st { _status = ErrorMsg "Save the file before exporting" 0 })
-        Just _ | _exportProgress st /= Nothing -> return () -- export already in progress
-        Just path -> do
-            let code = unlines $ E.getEditContents (_editor st)
-                objPath = replaceExtension path "obj"
-                resolution = cfgExportResolution (_config st)
-                color = cfgDefaultObjectColor (_config st)
-            put (st { _exportProgress = Just 0.0 })
-            _ <- liftIO $ forkIO $ do
-                result <- exportModelToOBJ color code objPath resolution
-                                          (\p -> writeBChan chan (ExportProgress p))
-                writeBChan chan (ExportFinished result)
-            return ()
+runCommand chan CmdExportOBJ = startMeshExport chan "obj" exportModelToOBJ
+
+-- Coloured mesh for the web (three.js) etc.: keeps paint() and material().
+runCommand chan CmdExportGLB = startMeshExport chan "glb" exportModelToGLB
 
 -- Toggle looping playback of the script's camera(...) animation. The
 -- keyframe track itself is (re)sent on every compile, so the viewer
@@ -532,6 +520,30 @@ shiftMovement :: V.Key -> Maybe V.Key
 shiftMovement k
     | k `elem` [V.KUp, V.KDown, V.KLeft, V.KRight, V.KHome, V.KEnd] = Just k
     | otherwise = Nothing
+
+-- | Export the editor's script as a mesh next to the saved file (with the
+--   given extension) on a background thread, reporting progress to the UI.
+startMeshExport
+    :: BChan CustomEvent
+    -> String
+    -> ((Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath))
+    -> EventM Name AppState ()
+startMeshExport chan ext exporter = do
+    st <- get
+    case _currentFile st of
+        Nothing -> put (st { _status = ErrorMsg "Save the file before exporting" 0 })
+        Just _ | _exportProgress st /= Nothing -> return () -- export already in progress
+        Just path -> do
+            let code = unlines $ E.getEditContents (_editor st)
+                outPath = replaceExtension path ext
+                resolution = cfgExportResolution (_config st)
+                color = cfgDefaultObjectColor (_config st)
+            put (st { _exportProgress = Just 0.0 })
+            _ <- liftIO $ forkIO $ do
+                result <- exporter color code outPath resolution
+                                   (\p -> writeBChan chan (ExportProgress p))
+                writeBChan chan (ExportFinished result)
+            return ()
 
 -- | What Copy/Cut take: the selection, or the current line plus newline.
 clipboardText :: AppState -> String

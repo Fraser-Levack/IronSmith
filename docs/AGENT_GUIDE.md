@@ -20,6 +20,8 @@ window, so it needs a desktop session with a GPU (Vulkan, Metal or DX12).
    the PNG. Render from more than one side (`--view`) before trusting it.
 4. **Adjust** the script and repeat from step 2.
 5. **Export** a mesh if one is wanted: `ironsmith export model.irsm -o model.obj`
+   (geometry only), or `-o model.glb` to keep `paint()` colours and
+   `material()`s, which is the right choice for web (three.js) or Blender.
 
 ## Commands
 
@@ -27,10 +29,11 @@ window, so it needs a desktop session with a GPU (Vulkan, Metal or DX12).
 |---|---|---|
 | `ironsmith check FILE` | Parse and validate | `OK: FILE (N statements, M bytecode instructions)` |
 | `ironsmith render FILE [-o OUT.png] [--view YAW,PITCH,DIST[,X,Y,Z]]` | Show the model in the viewer and save a still | `OK: wrote /abs/OUT.png` |
-| `ironsmith export FILE [-o OUT.obj] [--res N]` | Write a Wavefront OBJ mesh | `OK: wrote /abs/OUT.obj (resolution N)` |
+| `ironsmith export FILE [-o OUT.obj\|OUT.glb] [--format obj\|glb] [--res N]` | Write a mesh: OBJ (geometry) or GLB (glTF with colours + materials). `--res` is the number of cells across the model's longest side (default 128) | `OK: wrote /abs/OUT.ext (resolution N)` |
 | `ironsmith help` | Usage | |
 
-- Outputs default to the input path with a `.png` / `.obj` extension.
+- Outputs default to the input path with a `.png` / `.obj` / `.glb` extension.
+  The export format comes from `--format`, else the `-o` extension, else OBJ.
 - Errors go to stderr as `error: FILE:LINE: message` (parse errors also
   show the line with a caret). Exit codes: `0` ok, `1` script error,
   `2` bad usage, `3` viewer or I/O failure.
@@ -195,6 +198,12 @@ Design the model around what the filter reads:
 - Cut openings with `difference`: `difference(body, move(..., hole))`.
   The cutter should poke slightly past the surface it cuts, or the cut
   leaves a paper-thin skin.
+- The walls of a cut take the colour of the shape *being cut*, never the
+  cutter's: `difference(paint(red, body), paint(black, hole))` gives a red
+  hole. For a dark recess, cut the hole, then fill its floor with a dark
+  shape that sits just below the surface:
+  `group(difference(body, hole), paint(#111111, intersection(smallerBody, hole)))`,
+  where `smallerBody` is the same body built about 0.5 units smaller.
 - Fake detail with thin dark slabs pushed slightly through a surface
   (windows, panel lines) instead of cutting holes.
 - Use `material(neon, ...)` for things that glow (lights, screens) and
