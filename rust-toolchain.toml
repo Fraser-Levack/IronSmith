@@ -1,0 +1,10 @@
+# Pin the Rust toolchain so local builds, CI and releases all use the same
+# compiler and clippy. Floating "stable" broke CI twice at once (Rust 1.100):
+# winit 0.29's objc2 0.4 no longer compiles on new rustc (macOS), and new
+# clippy lints fail `-D warnings`. Bump this deliberately, together with the
+# `toolchain:` in .github/workflows/*.yml, and fix what the new version flags.
+# (Upgrading to winit 0.30 / objc2 0.5 is needed before going past this; see
+# ROADMAP.md.)
+[toolchain]
+channel = "1.86.0"
+components = ["rustfmt", "clippy"]

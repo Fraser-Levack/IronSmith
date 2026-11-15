@@ -31,7 +31,10 @@ jobs:
           ghc-version: '9.6.7'
           cabal-version: '3.12.1.0'
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Keep in sync with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
 
       # Never ship a build the test suites reject.
       - name: Test (Haskell)
