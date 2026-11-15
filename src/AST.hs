@@ -24,6 +24,11 @@ data Shape
     | Group [Shape]
     | Union Shape Shape
     | Intersection Shape Shape
+    -- Smooth CSG: the Expr is the blend radius k (0 = sharp, like the
+    -- plain ops). Opcodes 13/14/15.
+    | SmoothUnion Expr Shape Shape
+    | SmoothDifference Expr Shape Shape -- first minus second, like Difference
+    | SmoothIntersection Expr Shape Shape
     | Difference Shape Shape
     | ShapeRef String
     | Repeat Expr Expr Expr Shape -- spacing in X, Y, Z, and the shape

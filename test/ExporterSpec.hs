@@ -4,7 +4,8 @@ import Test.Hspec
 import Data.Array.Unboxed (listArray)
 import System.Directory (removeFile, doesFileExist)
 import qualified Data.ByteString as BS
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf, tails)
+import GHC.Float (castWord32ToFloat)
 import AST
 import Evaluator (compileToBytecode)
 import Exporter
@@ -167,5 +168,80 @@ spec = do
             estimateBounds (compileToBytecode (0, 0, 0) []) `shouldBe` Nothing
 
 -- | Little-endian uint32 from 4 bytes.
+    describe "smooth CSG" $ do
+        let close a b = abs (a - b) < 1e-4
+            sdfOf shape = let bc = compileToBytecode (1, 1, 1) [Draw shape]
+                          in evalSDF (listArray (0, length bc - 1) bc)
+            two = Move (Lit 1.5) (Lit 0) (Lit 0) (Sphere (Lit 1))
+
+        it "matches the plain operation when k = 0" $ do
+            let p = (0.7, 0.3, 0.1)
+            sdfOf (SmoothUnion (Lit 0) (Sphere (Lit 1)) two) p
+                `shouldSatisfy` close (sdfOf (Union (Sphere (Lit 1)) two) p)
+            sdfOf (SmoothDifference (Lit 0) (Sphere (Lit 1)) two) p
+                `shouldSatisfy` close (sdfOf (Difference (Sphere (Lit 1)) two) p)
+            sdfOf (SmoothIntersection (Lit 0) (Sphere (Lit 1)) two) p
+                `shouldSatisfy` close (sdfOf (Intersection (Sphere (Lit 1)) two) p)
+
+        it "fills the seam between two shapes (union bulges outwards)" $ do
+            -- Between the two spheres, at the neck: smooth union is inside
+            -- more than the sharp one.
+            let neck = (0.75, 0.6, 0)
+            sdfOf (SmoothUnion (Lit 0.5) (Sphere (Lit 1)) two) neck
+                `shouldSatisfy` (< sdfOf (Union (Sphere (Lit 1)) two) neck)
+
+        it "blends the radius with scale, like the shapes" $
+            -- scale(2, ...) of a smooth union: distances (and k) double.
+            sdfOf (Scale (Lit 2) (Lit 2) (Lit 2) (SmoothUnion (Lit 0.5) (Sphere (Lit 1)) two)) (1.5, 1.2, 0)
+                `shouldSatisfy` close (2 * sdfOf (SmoothUnion (Lit 0.5) (Sphere (Lit 1)) two) (0.75, 0.6, 0))
+
+        it "blends paint colours across the seam" $ do
+            let bc = compileToBytecode (1, 1, 1)
+                        [Draw (SmoothUnion (Lit 1) (Paint "red" [Sphere (Lit 1)])
+                                                   (Paint "blue" [Move (Lit 1.5) (Lit 0) (Lit 0) (Sphere (Lit 1))]))]
+                (_, (r, _, b), _) = evalHit (listArray (0, length bc - 1) bc) (0.75, 0.9, 0)
+            r `shouldSatisfy` (\x -> x > 0.2 && x < 0.8)
+            b `shouldSatisfy` (\x -> x > 0.2 && x < 0.8)
+
+        it "keeps the GLB material count small across a blended seam" $ do
+            -- Every distinct colour becomes a glTF material, so blended seams
+            -- are banded (16 steps) rather than giving each triangle its own.
+            let bc = compileToBytecode (1, 1, 1)
+                        [Draw (SmoothUnion (Lit 1) (Paint "red" [Sphere (Lit 1)])
+                                                   (Paint "blue" [Move (Lit 1.5) (Lit 0) (Lit 0) (Sphere (Lit 1))]))]
+                path = "test_blend.glb"
+            _ <- exportToGLB bc path 32 (const (return ()))
+            bytes <- BS.readFile path
+            removeFile path
+            let jsonLen = le32 (BS.take 4 (BS.drop 12 bytes))
+                json = map (toEnum . fromIntegral) (BS.unpack (BS.take jsonLen (BS.drop 20 bytes))) :: String
+                materials = length (filter ("\"matte #" `isPrefixOf`) (tails json))
+            materials `shouldSatisfy` (\m -> m >= 3 && m <= 17)
+
+    describe "exportToSTL" $ do
+        it "writes a binary STL whose size matches its triangle count, Z up" $ do
+            -- A tall box (Y is up in IronSmith) must come out tall in Z.
+            let bytecode = compileToBytecode (1, 1, 1) [Draw (Cube (Lit 1) (Lit 4) (Lit 1))]
+                path = "test_export.stl"
+            wrote <- exportToSTL bytecode path 16 (const (return ()))
+            wrote `shouldBe` True
+            bytes <- BS.readFile path
+            removeFile path
+            BS.take 5 bytes `shouldNotBe` BS.pack (map (fromIntegral . fromEnum) "solid")
+            let n = le32 (BS.take 4 (BS.drop 80 bytes))
+            n `shouldSatisfy` (> 0)
+            BS.length bytes `shouldBe` 84 + 50 * n
+            let f32At o = castWord32ToFloat (fromIntegral (le32 (BS.take 4 (BS.drop o bytes))))
+                -- vertex coordinates of every triangle: 12 floats after the normal
+                zs = [ f32At (84 + 50 * t + 12 + 12 * v + 8) | t <- [0 .. n - 1], v <- [0 .. 2] ]
+                ys = [ f32At (84 + 50 * t + 12 + 12 * v + 4) | t <- [0 .. n - 1], v <- [0 .. 2] ]
+            (maximum zs - minimum zs) `shouldSatisfy` (> 3.5)
+            (maximum ys - minimum ys) `shouldSatisfy` (< 1.5)
+
+        it "writes nothing for a scene with no shapes" $ do
+            wrote <- exportToSTL (compileToBytecode (1, 1, 1) []) "test_empty.stl" 8 (const (return ()))
+            wrote `shouldBe` False
+            doesFileExist "test_empty.stl" `shouldReturn` False
+
 le32 :: BS.ByteString -> Int
 le32 = foldr (\b acc -> acc * 256 + fromIntegral b) 0 . BS.unpack

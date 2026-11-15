@@ -24,10 +24,43 @@ symbol :: String -> Parser String
 symbol = L.symbol sc
 
 float :: Parser Float
-float = lexeme (L.signed (return ()) (try L.float <|> (fromIntegral <$> L.decimal)))
+float = lexeme (L.signed (return ()) unsignedNumber)
 
+-- | A number: digits with an optional fraction and exponent. Either side of
+--   the point may be empty, so `5`, `5.`, `.5`, `0.5` and `1e3` all work
+--   (but not a lone `.`).
+unsignedNumber :: Parser Float
+unsignedNumber = try $ do
+    whole <- many digitChar
+    frac <- optional (char '.' *> many digitChar)
+    when (null whole && maybe True null frac) $ fail "expected a number"
+    expo <- optional . try $ do
+        e <- oneOf "eE"
+        sign <- option "" ((: []) <$> oneOf "+-")
+        ds <- some digitChar
+        return (e : sign ++ ds)
+    let digitsOr0 ds = if null ds then "0" else ds
+        literal = digitsOr0 whole ++ "." ++ digitsOr0 (concat frac) ++ concat expo
+    return (realToFrac (read literal :: Double))
+
+-- | Words reserved for future syntax (loops, functions, conditionals), so
+--   adding it later can't break scripts that used these as names. Function
+--   names like `cube` or `light` are *not* reserved: they're only special
+--   when followed by '('.
+reservedWords :: [String]
+reservedWords =
+    ["for", "in", "while", "if", "else", "fn", "def", "return", "let", "true", "false", "import"]
+
+-- | A variable or function name. Reserved words are rejected with a
+--   message saying so. That failure is deliberately *committed* (it happens
+--   after consuming the word): an uncommitted one would be discarded when a
+--   statement starts with the word, leaving only "unexpected 'f'".
 identifier :: Parser String
-identifier = lexeme ((:) <$> letterChar <*> many (alphaNumChar <|> char '_'))
+identifier = lexeme $ do
+    name <- (:) <$> letterChar <*> many (alphaNumChar <|> char '_')
+    when (name `elem` reservedWords) $
+        fail ("'" ++ name ++ "' is a reserved word and can't be used as a name")
+    return name
 
 -------------------------------------------------
 -- 1. EXPRESSION PARSER
@@ -248,6 +281,23 @@ pIntersection = pBinaryCSG "intersection" Intersection
 pDifference :: Parser Shape
 pDifference = pBinaryCSG "difference" Difference
 
+-- | smooth_union(k, a, b) and friends: k is the blend radius.
+pSmoothCSG :: String -> (Expr -> Shape -> Shape -> Shape) -> Parser Shape
+pSmoothCSG keyword constructor = do
+    shapeKeyword keyword
+    let usage = keyword ++ "(blend, shape_a, shape_b)"
+    -- Forgetting the blend radius (`smooth_union(a(...), b(...))`) is the
+    -- likely mistake, so say so instead of "unexpected '('".
+    shapeFirst <- option False (True <$ try (lookAhead (identifier *> char '(')))
+    when shapeFirst $ fail ("the blend radius comes first: " ++ usage)
+    k <- pExpr <?> ("blend radius for " ++ keyword)
+    argSep usage
+    shape1 <- pShape <?> ("first shape for " ++ keyword)
+    argSep usage
+    shape2 <- pShape <?> ("second shape for " ++ keyword)
+    pClose usage
+    return (constructor k shape1 shape2)
+
 -- | A colour or material name, optionally wrapped in double quotes, so
 --   both paint(#FF5733, ...) and paint("#FF5733", ...) work.
 optQuoted :: Parser String -> Parser String
@@ -298,6 +348,9 @@ pShapeRef = do
 
 pShape :: Parser Shape
 pShape = pGroup <|>
+         pSmoothCSG "smooth_union" SmoothUnion <|>
+         pSmoothCSG "smooth_difference" SmoothDifference <|>
+         pSmoothCSG "smooth_intersection" SmoothIntersection <|>
          pUnion <|>
          pIntersection <|>
          pDifference <|>

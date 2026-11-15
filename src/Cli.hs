@@ -32,9 +32,10 @@ usage = unlines
     , "  ironsmith check  FILE.irsm             validate a script"
     , "  ironsmith render FILE.irsm [-o OUT.png] [--view YAW,PITCH,DIST[,X,Y,Z]]"
     , "                                         render a still image in the viewer"
-    , "  ironsmith export FILE.irsm [-o OUT.obj|OUT.glb] [--format obj|glb] [--res N]"
-    , "                                         export a mesh: OBJ (geometry only) or"
+    , "  ironsmith export FILE.irsm [-o OUT.obj|.glb|.stl] [--format obj|glb|stl] [--res N]"
+    , "                                         export a mesh: OBJ (geometry only),"
     , "                                         GLB/glTF (keeps paint colours + materials)"
+    , "                                         or STL (for 3D printing, Z up)"
     , "  ironsmith help                         show this help"
     , "  ironsmith --version                    show the version"
     , ""
@@ -76,9 +77,11 @@ runCli args = case args of
         fmt <- case map toLower <$> lookup "--format" o of
             Just "obj" -> return "obj"
             Just "glb" -> return "glb"
-            Just f     -> usageError ("bad --format '" ++ f ++ "' (expected obj or glb)")
+            Just "stl" -> return "stl"
+            Just f     -> usageError ("bad --format '" ++ f ++ "' (expected obj, glb or stl)")
             Nothing    -> return $ case map toLower . takeExtension <$> lookup "-o" o of
                               Just ".glb" -> "glb"
+                              Just ".stl" -> "stl"
                               _           -> "obj"
         export fmt file (lookup "-o" o) res
     _ -> usageError ("unknown command: " ++ unwords args)
@@ -127,7 +130,10 @@ export fmt file out res = do
     cfg <- getConfigPath >>= loadConfig
     outPath <- makeAbsolute (fromMaybe (replaceExtension file fmt) out)
     let resolution = clampExportResolution (fromMaybe (cfgExportResolution cfg) res)
-    let exporter = if fmt == "glb" then exportModelToGLB else exportModelToOBJ
+    let exporter = case fmt of
+            "glb" -> exportModelToGLB
+            "stl" -> exportModelToSTL
+            _     -> exportModelToOBJ
     result <- exporter (cfgDefaultObjectColor cfg) code outPath resolution (\_ -> return ())
     case result of
         Right p -> putStrLn ("OK: wrote " ++ p ++ " (resolution " ++ show resolution ++ ")")

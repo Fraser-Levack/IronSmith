@@ -46,6 +46,21 @@ struct Hit { float d; vec3 col; int mat; };
 Hit opU(Hit h1, Hit h2) { return (h1.d < h2.d) ? h1 : h2; }
 Hit opS(Hit h1, Hit h2) { return (h1.d > -h2.d) ? h1 : Hit(-h2.d, h1.col, h1.mat); }
 Hit opI(Hit h1, Hit h2) { return (h1.d > h2.d) ? h1 : h2; }
+// Smooth CSG (polynomial smin/smax) with blend radius k; k = 0 is the plain
+// op. h is the first operand's weight; colours blend with it, the material
+// goes to the dominant side. Keep in sync with smooth* in Exporter.hs.
+Hit opSmoothU(Hit a, Hit b, float k) {
+    float h = clamp(0.5 + 0.5 * (b.d - a.d) / max(k, 1e-6), 0.0, 1.0);
+    return Hit(mix(b.d, a.d, h) - k * h * (1.0 - h), mix(b.col, a.col, h), h > 0.5 ? a.mat : b.mat);
+}
+Hit opSmoothS(Hit a, Hit b, float k) {
+    float h = clamp(0.5 - 0.5 * (a.d + b.d) / max(k, 1e-6), 0.0, 1.0);
+    return Hit(mix(a.d, -b.d, h) + k * h * (1.0 - h), a.col, a.mat);
+}
+Hit opSmoothI(Hit a, Hit b, float k) {
+    float h = clamp(0.5 - 0.5 * (b.d - a.d) / max(k, 1e-6), 0.0, 1.0);
+    return Hit(mix(b.d, a.d, h) + k * h * (1.0 - h), mix(b.col, a.col, h), h > 0.5 ? a.mat : b.mat);
+}
 
 float sdSphere(vec3 p, float s) { return length(p)-s; }
 float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
@@ -411,6 +426,32 @@ pub fn generate_program(bytecode: &[f32]) -> Result<SceneProgram, String> {
                 body.push_str(&format!("s{} = {}(s{}, s{});\n", a, op, a, b));
                 sp += 1;
             }
+            13..=15 => {
+                // SMOOTH UNION / DIFF / INTERSECT (blend radius k). k is in
+                // the shapes' own units, so it scales with them, like their
+                // distances (which are multiplied by current_scale).
+                if sp < 2 {
+                    return Err(format!(
+                        "CSG op {} needs two shapes but the stack has {}",
+                        iop, sp
+                    ));
+                }
+                let op = match iop {
+                    13 => "opSmoothU",
+                    14 => "opSmoothS",
+                    _ => "opSmoothI",
+                };
+                let k = prm.f(a(1));
+                sp -= 1;
+                let b = sp;
+                sp -= 1;
+                let a = sp;
+                body.push_str(&format!(
+                    "s{} = {}(s{}, s{}, {} * current_scale);\n",
+                    a, op, a, b, k
+                ));
+                sp += 1;
+            }
             20..=22 => {
                 // ROTATE_X / Y / Z by (cos, sin)
                 let (c, s) = (prm.f(a(1)), prm.f(a(2)));
@@ -773,6 +814,44 @@ mod tests {
         let source = build_scene_source(&prog.body, prog.params.len());
         parse_glsl_fragment(&source).unwrap();
         source
+    }
+
+    /// Two spheres combined by `op` with blend radius `k`.
+    fn smooth_pair(op: f32, k: f32) -> Vec<f32> {
+        vec![
+            1.0, 1.0, 0.0, 0.0, // sphere r=1
+            24.0, 1.5, 0.0, 0.0, // move x 1.5
+            1.0, 1.0, 0.0, 0.0, // sphere r=1
+            25.0, 0.0, 0.0, 0.0, // pop transform
+            op, k, 0.0, 0.0,
+        ]
+    }
+
+    #[test]
+    fn smooth_ops_validate_and_read_k_from_params() {
+        for (op, func) in [
+            (13.0, "opSmoothU"),
+            (14.0, "opSmoothS"),
+            (15.0, "opSmoothI"),
+        ] {
+            let src = validate(&smooth_pair(op, 0.5));
+            assert!(src.contains(func), "{func} not emitted");
+            let prog = generate_program(&smooth_pair(op, 0.5)).unwrap();
+            assert_eq!(*prog.params.last().unwrap(), 0.5);
+        }
+    }
+
+    #[test]
+    fn smooth_blend_radius_is_a_number_edit_not_a_structure_change() {
+        let a = generate_program(&smooth_pair(13.0, 0.5)).unwrap();
+        let b = generate_program(&smooth_pair(13.0, 2.0)).unwrap();
+        assert_eq!(a.body, b.body);
+        assert_ne!(a.params, b.params);
+    }
+
+    #[test]
+    fn smooth_op_with_one_shape_is_rejected() {
+        assert!(generate_program(&[1.0, 1.0, 0.0, 0.0, 13.0, 0.5, 0.0, 0.0]).is_err());
     }
 
     #[test]

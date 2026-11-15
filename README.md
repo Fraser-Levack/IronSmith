@@ -60,6 +60,8 @@ Press **Ctrl+A** to play it in the viewer, or **Ctrl+Shift+V** to export it as a
 
 * **Custom Scripting Language:** Write `.irsm` files using a clean, math-focused syntax.
 * **TUI Editor:** A terminal user interface built in Haskell (`brick`) with syntax highlighting, a file manager, and error reporting.
+* **Smooth CSG:** `smooth_union`, `smooth_difference` and `smooth_intersection` blend shapes (and their colours) into organic forms.
+* **Mouse control:** drag in the viewer window to orbit (left) or pan (right/middle); scroll to zoom.
 * **Instant Hot-Reloading:** The moment you stop typing, the 3D viewer updates. No manual compilation required.
 * **GPU Raymarching:** The renderer evaluates Signed Distance Fields (SDFs) natively on the GPU for perfectly smooth, mathematically accurate shapes.
 * **Graceful Error Handling:** If you type a syntax error, the renderer catches the panic and holds the last working shape until you fix your code.
@@ -117,6 +119,7 @@ IronSmith supports basic primitives, transformations, and CSG (Constructive Soli
 // Variables
 size = 5
 
+// Numbers: 5, 5., 0.5, .5, 1e3
 // Numeric expressions support +, -, *, and / with standard precedence
 // (* and / bind tighter than + and -, all left-associative)
 gap = size * 2 + 1
@@ -149,6 +152,11 @@ difference(                         // the first shape with the second cut out:
 )
 group(shape_a, shape_b, shape_c)    // union of any number of shapes
 
+// Smooth CSG: blend radius first, rounds the join over that distance
+smooth_union(0.5, shape_a, shape_b)        // melts shapes together
+smooth_difference(0.5, shape_a, shape_b)   // a minus b, with a soft edge
+smooth_intersection(0.5, shape_a, shape_b) // overlap, with rounded edges
+
 // Materials and Paints (quotes are optional: paint("#FF5733", ...) works too)
 paint(#FF5733, shape)               // hex code, or a preset: white, black, red, green, blue
 material(metal, shape)              // metal, plastic, matte, or neon
@@ -165,6 +173,8 @@ camera(4, 360, 20, 25)  // a 4-second full turntable orbit
 ```
 
 Pair a dim `light(...)` with the `exposure` setting in `ironsmith.toml` (Ctrl+G) to fine-tune viewport brightness.
+
+A few words are reserved for future syntax and can't be used as names: `for in while if else fn def return let true false import`.
 
 Coordinates: **Y is up**. `cube` takes full sizes (not half-extents), and `cylinder`, `cone` and `torus` are built around the Y axis (wrap them in `rotateX(90, ...)` to lay them along Z).
 
@@ -190,7 +200,7 @@ ironsmith export car.irsm -o car.glb            # mesh export with colours + mat
 
 `render` starts the viewer if needed and leaves it open, so repeated renders take a fraction of a second. Exit codes: `0` ok, `1` script error, `2` bad usage, `3` viewer/IO failure. See [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) for the agent workflow and modelling tips.
 
-## 📦 Mesh Export (.obj / .glb)
+## 📦 Mesh Export (.obj / .glb / .stl)
 
 IronSmith meshes your SDF scene on the CPU and writes it next to your `.irsm` file:
 
@@ -198,8 +208,9 @@ IronSmith meshes your SDF scene on the CPU and writes it next to your `.irsm` fi
 |---|---|---|---|
 | Wavefront `.obj` | `Ctrl+Shift+E` | `ironsmith export model.irsm` | No (geometry only) |
 | Binary glTF `.glb` | `Ctrl+Shift+G` | `ironsmith export model.irsm --format glb` (or `-o model.glb`) | **Yes** |
+| Binary `.stl` (3D printing) | Command palette | `ironsmith export model.irsm --format stl` (or `-o model.stl`) | No |
 
-Both are in the command palette too (`Ctrl+P`). `export_resolution` in `ironsmith.toml` (default 128), or `--res N` on the CLI, sets the detail for both: the number of sampling cells across the model's longest side. The grid is fitted to the model, so a small part gets the same detail as a whole scene. Both formats are indexed (vertices are shared between triangles), which keeps files compact.
+All three are in the command palette (`Ctrl+P`). STL exports are rotated to **Z-up**, which is what slicers (Cura, PrusaSlicer, Bambu Studio) expect, and slicers read the units as millimetres. `export_resolution` in `ironsmith.toml` (default 128), or `--res N` on the CLI, sets the detail for both: the number of sampling cells across the model's longest side. The grid is fitted to the model, so a small part gets the same detail as a whole scene. Both formats are indexed (vertices are shared between triangles), which keeps files compact.
 
 The `.glb` export keeps everything `paint()` and `material()` set. Triangles that share a colour and material become one glTF primitive, and each gets a PBR material that approximates how the viewer shows it:
 

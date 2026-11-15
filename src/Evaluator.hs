@@ -123,6 +123,9 @@ validateScriptAt = go 0 [] []
         Group ss          -> mapM_ cs ss
         Union a b         -> cs a >> cs b
         Intersection a b  -> cs a >> cs b
+        SmoothUnion k a b        -> ce k >> cs a >> cs b
+        SmoothDifference k a b   -> ce k >> cs a >> cs b
+        SmoothIntersection k a b -> ce k >> cs a >> cs b
         Difference a b    -> cs a >> cs b
         Paint _ ss        -> mapM_ cs ss
         Material _ ss     -> mapM_ cs ss
@@ -188,6 +191,9 @@ validateValues = go Map.empty
         Group ss         -> mapM_ sub ss
         Union a b        -> sub a >> sub b
         Intersection a b -> sub a >> sub b
+        SmoothUnion k a b        -> blend "smooth_union" k >> sub a >> sub b
+        SmoothDifference k a b   -> blend "smooth_difference" k >> sub a >> sub b
+        SmoothIntersection k a b -> blend "smooth_intersection" k >> sub a >> sub b
         Difference a b   -> sub a >> sub b
         Paint _ ss       -> mapM_ sub ss
         Material _ ss    -> mapM_ sub ss
@@ -195,6 +201,7 @@ validateValues = go Map.empty
       where
         sub = checkShape env line
         val = evalExpr env
+        blend what k = sizes what [("blend radius", k)]
         nums what = mapM_ (finite line (what ++ "(...)") . val)
         sizes what = mapM_ $ \(arg, e) -> do
             let v = val e
@@ -223,6 +230,9 @@ resolveShape env shape = case shape of
     Group ss         -> Group (map go ss)
     Union a b        -> Union (go a) (go b)
     Intersection a b -> Intersection (go a) (go b)
+    SmoothUnion k a b        -> SmoothUnion k (go a) (go b)
+    SmoothDifference k a b   -> SmoothDifference k (go a) (go b)
+    SmoothIntersection k a b -> SmoothIntersection k (go a) (go b)
     Difference a b   -> Difference (go a) (go b)
     Paint c ss       -> Paint c (map go ss)
     Material m ss    -> Material m (map go ss)
@@ -265,9 +275,15 @@ compileShapeD env mat shape = case shape of
     -- CSG ops compute (first pushed) OP (top of stack) in both the viewer
     -- and the OBJ exporter. difference(a, b) is "a with b cut out", so `a`
     -- is pushed first; its order is fixed, unlike the commutative ops.
-    Union a b        -> emitCommutative 10.0 (go a) (go b)
-    Difference a b   -> emitBinary 11.0 (go a) (go b)
-    Intersection a b -> emitCommutative 12.0 (go a) (go b)
+    Union a b        -> emitCommutative [10, 0, 0, 0] (go a) (go b)
+    Difference a b   -> emitBinary [11, 0, 0, 0] (go a) (go b)
+    Intersection a b -> emitCommutative [12, 0, 0, 0] (go a) (go b)
+
+    -- Smooth variants carry the blend radius. Smooth union/intersection
+    -- are symmetric in their operands, so they can be reordered too.
+    SmoothUnion ek a b        -> emitCommutative [13, evalExpr env ek, 0, 0] (go a) (go b)
+    SmoothDifference ek a b   -> emitBinary [14, evalExpr env ek, 0, 0] (go a) (go b)
+    SmoothIntersection ek a b -> emitCommutative [15, evalExpr env ek, 0, 0] (go a) (go b)
 
     -- Transform Ops
     Move ex ey ez innerShape ->
@@ -325,17 +341,17 @@ compileShapeD env mat shape = case shape of
 
 -- | Emit `first`, then `second`, then a binary CSG op. While `second` is
 --   being evaluated, `first`'s result occupies one stack slot.
-emitBinary :: Float -> Compiled -> Compiled -> Compiled
-emitBinary op (c1, d1) (c2, d2) = (c1 ++ c2 ++ [op, 0.0, 0.0, 0.0], max d1 (d2 + 1))
+emitBinary :: [Float] -> Compiled -> Compiled -> Compiled
+emitBinary instr (c1, d1) (c2, d2) = (c1 ++ c2 ++ instr, max d1 (d2 + 1))
 
 -- | For commutative ops, evaluate the deeper operand first (Sethi-Ullman
 --   ordering). Without this, a chain like `a = union(a, x)` repeated N times
 --   needs N stack slots; with it, it needs 2. Ties keep the historical
 --   operand order so existing bytecode is unchanged.
-emitCommutative :: Float -> Compiled -> Compiled -> Compiled
-emitCommutative op a b
-    | snd a > snd b = emitBinary op a b
-    | otherwise     = emitBinary op b a
+emitCommutative :: [Float] -> Compiled -> Compiled -> Compiled
+emitCommutative instr a b
+    | snd a > snd b = emitBinary instr a b
+    | otherwise     = emitBinary instr b a
 
 -- | Union a list of shapes together. Members that compile to nothing (e.g.
 --   an empty nested group) are skipped, so they can't leave the union with
@@ -345,7 +361,7 @@ compileGroupD env mat shapes =
     case filter (not . null . fst) (map (compileShapeD env mat) shapes) of
         []     -> ([], 0)
         -- On ties the rest of the group is pushed first (historical order).
-        pieces -> foldr1 (emitCommutative 10.0) pieces
+        pieces -> foldr1 (emitCommutative [10, 0, 0, 0]) pieces
 
 -- | ENTRY POINT
 --   defaultColor sets the colour drawn shapes get when they aren't

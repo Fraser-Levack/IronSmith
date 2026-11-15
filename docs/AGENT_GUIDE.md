@@ -29,10 +29,10 @@ window, so it needs a desktop session with a GPU (Vulkan, Metal or DX12).
 |---|---|---|
 | `ironsmith check FILE` | Parse and validate | `OK: FILE (N statements, M bytecode instructions)` |
 | `ironsmith render FILE [-o OUT.png] [--view YAW,PITCH,DIST[,X,Y,Z]]` | Show the model in the viewer and save a still | `OK: wrote /abs/OUT.png` |
-| `ironsmith export FILE [-o OUT.obj\|OUT.glb] [--format obj\|glb] [--res N]` | Write a mesh: OBJ (geometry) or GLB (glTF with colours + materials). `--res` is the number of cells across the model's longest side (default 128) | `OK: wrote /abs/OUT.ext (resolution N)` |
+| `ironsmith export FILE [-o OUT.obj\|OUT.glb\|OUT.stl] [--format obj\|glb\|stl] [--res N]` | Write a mesh: OBJ (geometry), GLB (glTF with colours + materials) or STL (3D printing, Z up). `--res` is the number of cells across the model's longest side (default 128, 8 to 1024) | `OK: wrote /abs/OUT.ext (resolution N)` |
 | `ironsmith help` | Usage | |
 
-- Outputs default to the input path with a `.png` / `.obj` / `.glb` extension.
+- Outputs default to the input path with a `.png` / `.obj` / `.glb` / `.stl` extension.
   The export format comes from `--format`, else the `-o` extension, else OBJ.
 - Errors go to stderr as `error: FILE:LINE: message` (parse errors also
   show the line with a caret). Exit codes: `0` ok, `1` script error,
@@ -85,6 +85,9 @@ union(a, b)
 intersection(a, b)
 difference(a, b)                 // a with b cut out of it
 group(a, b, c, ...)              // union of any number of shapes
+smooth_union(k, a, b)            // blended union: k = blend radius (0 = sharp)
+smooth_difference(k, a, b)       // a minus b with a rounded edge
+smooth_intersection(k, a, b)     // overlap with rounded edges
 
 // Appearance (wrap any number of shapes)
 paint(#RRGGBB, shape, ...)       // or white, black, red, green, blue
@@ -196,6 +199,11 @@ Design the model around what the filter reads:
   derive positions from them; adjusting proportions is then a one-line
   change.
 - Cut openings with `difference`: `difference(body, move(..., hole))`.
+- For organic shapes (creatures, fillets, soft joints) use the smooth ops with
+  a blend radius well below the shapes' sizes, e.g.
+  `smooth_union(0.3, head, body)`. Colours blend across the seam.
+- Reserved words (`for in while if else fn def return let true false import`)
+  can't be used as variable names.
   The cutter should poke slightly past the surface it cuts, or the cut
   leaves a paper-thin skin.
 - The walls of a cut take the colour of the shape *being cut*, never the
