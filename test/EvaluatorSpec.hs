@@ -253,3 +253,64 @@ spec = do
         it "rejects an undefined variable inside a subtraction expression" $
             validateScript [Assign "x" (Sub (Lit 1) (Var "nope"))]
                 `shouldBe` Left ("nope", "Unknown variable 'nope'")
+
+        it "forgets a number that was redefined as a shape" $
+            validateScript
+                [ Assign "a" (Lit 5)
+                , AssignShape "a" (Cube (Lit 1) (Lit 1) (Lit 1))
+                , Draw (Sphere (Var "a"))
+                ]
+                `shouldBe` Left ("a", "'a' is a shape, but it's used here as a number")
+
+        it "forgets a shape that was redefined as a number" $
+            validateScript
+                [ AssignShape "a" (Sphere (Lit 1))
+                , Assign "a" (Lit 2)
+                , Draw (ShapeRef "a")
+                ]
+                `shouldBe` Left ("a", "'a' is a number, but it's used here as a shape")
+
+    describe "validateValues" $ do
+        let lined = zip [1 ..]
+
+        it "accepts ordinary scripts" $
+            validateValues (lined
+                [ Assign "r" (Lit 2)
+                , Draw (Scale (Lit 2) (Lit 2) (Lit 2) (Sphere (Var "r")))
+                , Draw (Cone (Lit 1) (Lit 0) (Lit 2)) -- pointed cone: top radius 0
+                , Draw (Move (Lit (-3)) (Lit 0) (Lit 0) (Cube (Lit 0) (Lit 1) (Lit 1)))
+                ]) `shouldBe` Right ()
+
+        it "rejects division by zero at the assignment" $
+            fmap snd (either Just (const Nothing) (validateValues (lined
+                [ Assign "z" (Lit 0), Assign "w" (Div (Lit 1) (Var "z")) ])))
+                `shouldBe` Just 2
+
+        it "rejects a non-finite number inside a shape at the draw" $
+            fmap snd (either Just (const Nothing) (validateValues (lined
+                [ Draw (Sphere (Lit 1)), Draw (Cube (Div (Lit 0) (Lit 0)) (Lit 1) (Lit 1)) ])))
+                `shouldBe` Just 2
+
+        it "rejects negative sizes" $
+            validateValues (lined [Draw (Sphere (Lit (-1)))])
+                `shouldBe` Left ("sphere radius can't be negative (got -1)", 1)
+
+        it "rejects zero and negative scale factors" $ do
+            validateValues (lined [Draw (Scale (Lit 0) (Lit 0) (Lit 0) (Sphere (Lit 1)))])
+                `shouldBe` Left ("scale factors must be greater than 0 (got 0)", 1)
+            fmap snd (either Just (const Nothing) (validateValues (lined
+                [Draw (Scale (Lit 1) (Lit (-1)) (Lit 1) (Sphere (Lit 1)))])))
+                `shouldBe` Just 1
+
+        it "checks stored shapes with the values in scope where they're drawn" $
+            fmap snd (either Just (const Nothing) (validateValues (lined
+                [ Assign "r" (Lit 1)
+                , AssignShape "s" (Sphere (Var "r"))
+                , Assign "r" (Lit (-2))
+                , Draw (ShapeRef "s")
+                ]))) `shouldBe` Just 4
+
+        it "checks light and camera numbers" $
+            fmap snd (either Just (const Nothing) (validateValues (lined
+                [ Light (Div (Lit 1) (Lit 0)) (Lit 1) (Lit 1) (Lit 1) ])))
+                `shouldBe` Just 1

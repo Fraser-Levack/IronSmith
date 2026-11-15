@@ -20,9 +20,10 @@ use camera::Camera;
 use network::{Incoming, NetMessage};
 use renderer::Renderer;
 
+/// Must match the editor's `getConfigDir` (AppCore.hs).
 fn get_config_dir() -> PathBuf {
     dirs::config_dir()
-        .expect("Config dir error")
+        .unwrap_or_else(std::env::temp_dir)
         .join("ironsmith")
 }
 
@@ -45,6 +46,12 @@ fn load_filter(name: &str) -> Option<String> {
     }
     std::fs::read_to_string(get_filters_dir().join(format!("{}.glsl", name))).ok()
 }
+
+/// Trackpad scroll distance (in pixels) treated as one mouse-wheel notch.
+const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
+
+/// The editor and CLI talk to the viewer on this local port.
+const VIEWER_ADDR: &str = "127.0.0.1:7878";
 
 /// How long a screenshot request may wait for its scene to compile before
 /// the viewer gives up and replies with an error.
@@ -112,6 +119,24 @@ fn setup_panic_logger() {
 }
 
 async fn run() -> Result<()> {
+    // Claim the port before opening a window: if another viewer already
+    // has it, this one could never receive a scene. The editor and CLI
+    // reuse a running viewer, so this only happens when one is started by
+    // hand; exit cleanly with a message instead of panicking (= abort).
+    let log_path = get_config_dir().join("forge.log");
+    let listener = match TcpListener::bind(VIEWER_ADDR) {
+        Ok(l) => l,
+        Err(e) => {
+            let msg = format!(
+                "Another program (probably another IronSmith viewer) is using {}: {}. Close it, or keep using the viewer that is already open.",
+                VIEWER_ADDR, e
+            );
+            shader::log_line(&log_path, &msg);
+            anyhow::bail!(msg);
+        }
+    };
+    listener.set_nonblocking(true)?;
+
     let event_loop = EventLoop::new()?;
     let window = Arc::new(
         WindowBuilder::new()
@@ -120,19 +145,12 @@ async fn run() -> Result<()> {
             .build(&event_loop)?,
     );
 
-    let log_path = get_config_dir().join("forge.log");
-
     let mut renderer = Renderer::new(window.clone(), log_path).await?;
 
     // Ship the example filters so users have working files to copy and mod.
     if let Err(e) = filter::install_default_filters(&get_filters_dir()) {
         renderer.log_message(&format!("Failed to install default filters: {}", e));
     }
-
-    let listener = TcpListener::bind("127.0.0.1:7878").expect("Failed to bind TCP port");
-    listener
-        .set_nonblocking(true)
-        .expect("Cannot set non-blocking");
 
     let mut camera = Camera::new();
     let mut last_frame = std::time::Instant::now();
@@ -145,11 +163,12 @@ async fn run() -> Result<()> {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(ps) => renderer.resize(ps),
 
-                WindowEvent::MouseWheel {
-                    delta: MouseScrollDelta::LineDelta(_, y),
-                    ..
-                } => {
-                    camera.scroll_zoom(y);
+                WindowEvent::MouseWheel { delta, .. } => {
+                    camera.scroll_zoom(match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        // Trackpads (notably on macOS) report pixels.
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32 / PIXELS_PER_SCROLL_LINE,
+                    });
                 }
 
                 WindowEvent::RedrawRequested => {
@@ -287,6 +306,11 @@ async fn run() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("ironsmith-viewer {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let _ = std::fs::create_dir_all(get_config_dir());
     setup_panic_logger();
     pollster::block_on(run())
 }

@@ -2,7 +2,8 @@
 module Config where
 
 import System.Directory (doesFileExist)
-import System.FilePath ((</>))
+import System.IO (withFile, IOMode(..), hSetEncoding, hGetContents, hPutStr, utf8)
+import Control.Exception (try, IOException)
 import Data.List (isPrefixOf, stripPrefix)
 import Data.Char (isSpace)
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -15,11 +16,9 @@ data IronConfig = IronConfig
     , cfgShadowEnabled      :: Bool
     , cfgMarchSteps         :: Int
     , cfgAutoCompileDelayMs :: Int
-    , cfgDefaultMaterial    :: String
     , cfgLaunchViewerOnStart :: Bool
     , cfgRestoreLastFile    :: Bool
     , cfgDefaultObjectColor :: (Float, Float, Float) -- default colour for unpainted shapes
-    , cfgEditorLineWrap     :: Bool
     , cfgKeybindings        :: [(String, String)] -- command id -> key combo, e.g. "save" -> "ctrl+s"
     , cfgExportResolution   :: Int -- grid cells per axis for .obj export
     , cfgFilter             :: String -- post-process filter name ("none" = off)
@@ -44,6 +43,7 @@ defaultKeybindings =
     , ("cycle_filter",     "ctrl+f")
     , ("toggle_animation", "ctrl+a")
     , ("export_video",     "ctrl+shift+v")
+    , ("relaunch_viewer",  "ctrl+l")
     , ("undo",             "ctrl+z")
     , ("redo",             "ctrl+y")
     , ("copy",             "ctrl+c")
@@ -60,11 +60,9 @@ defaultConfig = IronConfig
     , cfgShadowEnabled      = True
     , cfgMarchSteps         = 150
     , cfgAutoCompileDelayMs = 150
-    , cfgDefaultMaterial    = "matte"
     , cfgLaunchViewerOnStart = True
     , cfgRestoreLastFile    = False
     , cfgDefaultObjectColor = (0.8, 0.4, 0.1) -- Forge Orange
-    , cfgEditorLineWrap     = False
     , cfgKeybindings        = defaultKeybindings
     , cfgExportResolution   = 128
     , cfgFilter             = "none"
@@ -124,19 +122,14 @@ defaultConfigText = unlines $
     , "# this can be short; adding/removing shapes still compiles a shader."
     , "auto_compile_delay_ms = 150"
     , ""
-    , "# Default material for new shapes (matte / plastic / neon / metal)"
-    , "default_material = matte"
-    , ""
-    , "# Wrap long lines in the code editor instead of scrolling horizontally"
-    , "# (true/false). Not yet implemented - reserved for a future release."
-    , "editor_line_wrap = false"
-    , ""
     , "[startup]"
     , ""
-    , "# Launch the 3D viewer window automatically on startup (true/false)"
+    , "# Launch the 3D viewer window automatically on startup (true/false)."
+    , "# If off (or you close the window), use 'Relaunch Viewer' (Ctrl+L)."
     , "launch_viewer_on_start = true"
     , ""
-    , "# Automatically re-open the last edited file on startup (true/false)"
+    , "# Re-open the most recently edited file on startup instead of showing"
+    , "# the start screen (true/false)"
     , "restore_last_file = false"
     , ""
     , "[export]"
@@ -163,26 +156,42 @@ defaultConfigText = unlines $
 
 -- ─── PARSER ──────────────────────────────────────────────────────────────────
 
--- | Read a file's contents strictly, closing the handle before returning.
+-- | Read a UTF-8 text file strictly, closing the handle before returning.
 --   Lazy 'readFile' can leave the handle open until GC'd, which on Windows
 --   causes a later 'writeFile' to the same path to fail with
---   "resource busy (file is locked)".
+--   "resource busy (file is locked)". The encoding is fixed to UTF-8 rather
+--   than the system locale (e.g. a Windows code page), so a script with an
+--   accented comment reads the same everywhere. A leading byte-order mark
+--   (added by some Windows editors) is dropped.
 readFileStrict :: FilePath -> IO String
-readFileStrict path = do
-    contents <- readFile path
-    length contents `seq` return contents
+readFileStrict path = withFile path ReadMode $ \h -> do
+    hSetEncoding h utf8
+    contents <- hGetContents h
+    length contents `seq` return (dropBom contents)
+  where
+    dropBom ('\xFEFF':rest) = rest
+    dropBom s = s
 
--- | Load config from disk, writing defaults if it doesn't exist yet.
+-- | Write a text file as UTF-8 (see 'readFileStrict').
+writeFileUtf8 :: FilePath -> String -> IO ()
+writeFileUtf8 path contents = withFile path WriteMode $ \h -> do
+    hSetEncoding h utf8
+    hPutStr h contents
+
+-- | Load config from disk, writing defaults if it doesn't exist yet. Never
+--   throws: an unreadable file or a folder we can't write to just means
+--   running with the defaults.
 loadConfig :: FilePath -> IO IronConfig
 loadConfig path = do
     exists <- doesFileExist path
     if exists
-        then do
-            raw <- readFileStrict path
-            return (parseConfig raw)
+        then either (const defaultConfig) parseConfig <$> tryIO' (readFileStrict path)
         else do
-            writeFile path defaultConfigText
+            _ <- tryIO' (writeFileUtf8 path defaultConfigText)
             return defaultConfig
+  where
+    tryIO' :: IO a -> IO (Either IOException a)
+    tryIO' = try
 
 -- | Parse the TOML-style config text into an IronConfig.
 --   Unknown keys are silently ignored; missing keys fall back to defaults.
@@ -202,16 +211,12 @@ parseConfig raw =
                                     (lookup "march_steps" pairs >>= readMaybeInt)
         , cfgAutoCompileDelayMs = fromMaybe (cfgAutoCompileDelayMs defaultConfig)
                                     (lookup "auto_compile_delay_ms" pairs >>= readMaybeInt)
-        , cfgDefaultMaterial    = fromMaybe (cfgDefaultMaterial defaultConfig)
-                                    (lookup "default_material" pairs)
         , cfgLaunchViewerOnStart = fromMaybe (cfgLaunchViewerOnStart defaultConfig)
                                     (lookup "launch_viewer_on_start" pairs >>= readMaybeBool)
         , cfgRestoreLastFile    = fromMaybe (cfgRestoreLastFile defaultConfig)
                                     (lookup "restore_last_file" pairs >>= readMaybeBool)
         , cfgDefaultObjectColor = fromMaybe (cfgDefaultObjectColor defaultConfig)
                                     (lookup "default_object_color" pairs >>= parseColor)
-        , cfgEditorLineWrap     = fromMaybe (cfgEditorLineWrap defaultConfig)
-                                    (lookup "editor_line_wrap" pairs >>= readMaybeBool)
         , cfgKeybindings        = [ (cmdId, fromMaybe defaultCombo (lookup cmdId pairs))
                                    | (cmdId, defaultCombo) <- defaultKeybindings ]
         , cfgExportResolution   = fromMaybe (cfgExportResolution defaultConfig)

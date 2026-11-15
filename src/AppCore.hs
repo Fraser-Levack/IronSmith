@@ -1,27 +1,33 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module AppCore where
 
-import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectoryIfMissing)
+import System.Directory (doesFileExist, getAppUserDataDirectory, createDirectoryIfMissing,
+                         getHomeDirectory, getXdgDirectory, XdgDirectory(XdgConfig), copyFile)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>), takeDirectory)
 import System.Info (os)
 import Data.Char (isAlphaNum)
 import Data.List (nub, intercalate)
+import Data.Maybe (isJust)
+import Data.Version (showVersion)
 import qualified Data.List.NonEmpty as NE
-import Control.Exception (catch, bracket, evaluate, SomeException)
+import Control.Exception (catch, bracket, evaluate, try, SomeException, IOException)
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (when, forM_, void)
 import System.Timeout (timeout)
 
-import Text.Megaparsec
+import Paths_ironsmith (version)
+
+import Text.Megaparsec hiding (try)
 import Text.Megaparsec.Pos (sourceLine, unPos) 
 
 import AST
 import Parser
 import Evaluator
-import Exporter (exportToOBJ, exportToGLB)
+import Exporter (exportToOBJ, exportToGLB, exportRadius)
 import Config
 
-import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, Inherit, NoStream), terminateProcess)
+import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, Inherit, NoStream), terminateProcess, getProcessExitCode)
 
 import Network.Socket
 import Network.Socket.ByteString (sendAll, recv)
@@ -51,6 +57,7 @@ viewerPath = do
     return (if bundled then bundledPath else viewerExeName)
 
 -- | Launch the viewer as a child of the TUI (stopped when the TUI exits).
+--   Throws if the binary can't be started; see 'ensureViewer'.
 launchViewer :: IO ProcessHandle
 launchViewer = do
     path <- viewerPath
@@ -59,6 +66,54 @@ launchViewer = do
         , std_err = CreatePipe
         }
     return handle
+
+-- | Make sure a viewer is listening, for the TUI. A viewer that is already
+--   running (e.g. one a CLI `render` left open) is reused, and Nothing is
+--   returned because it isn't ours to stop. Otherwise one is launched and
+--   we wait until it accepts connections, giving up early if it exits
+--   (no GPU, missing libraries...). Never throws: a missing or broken
+--   viewer becomes an error message the editor can show.
+ensureViewer :: IO (Either String (Maybe ProcessHandle))
+ensureViewer = do
+    running <- viewerReachable
+    if running then return (Right Nothing) else do
+        launched <- try launchViewer
+        case launched of
+            Left (e :: SomeException) ->
+                return (Left ("Could not start " ++ viewerExeName ++ ": " ++ show e
+                              ++ " (it must be next to ironsmith or on your PATH)"))
+            Right h -> do
+                up <- waitUntilUp h (100 :: Int) -- 10 seconds
+                return $ if up
+                    then Right (Just h)
+                    else Left ("The viewer didn't start (see forge.log in the config folder)."
+                               ++ " Run 'Relaunch Viewer' from the command palette to retry.")
+  where
+    waitUntilUp h n = do
+        up <- viewerReachable
+        exited <- getProcessExitCode h
+        case () of
+            _ | up                 -> return True
+              | isJust exited      -> return False
+              | n <= 0             -> terminateProcess h >> return False
+              | otherwise          -> threadDelay 100000 >> waitUntilUp h (n - 1)
+
+-- | This build's version, from the cabal file, e.g. "1.0.0".
+versionString :: String
+versionString = showVersion version
+
+-- | Keep a configured export resolution within the supported range.
+clampExportResolution :: Int -> Int
+clampExportResolution = max minExportResolution . min maxExportResolution
+
+-- | Run a file operation, turning IO errors (missing folder, permissions,
+--   a file locked by another program, bad encoding...) into a message.
+tryIO :: IO a -> IO (Either String a)
+tryIO act = do
+    r <- try act
+    return $ case r of
+        Left (e :: IOException) -> Left (show e)
+        Right v                 -> Right v
 
 -- | Launch a viewer that outlives this process, for the CLI: later
 --   `ironsmith render` calls then reuse the already-open window instead of
@@ -90,11 +145,42 @@ stopViewer :: Maybe ProcessHandle -> IO ()
 stopViewer Nothing = return ()
 stopViewer (Just h) = terminateProcess h
 
+-- | The IronSmith config folder. It must be the same folder the viewer
+--   uses (Rust's `dirs::config_dir()/ironsmith`), since the viewer installs
+--   filters and writes forge.log there and the TUI lists/reads them:
+--
+--   * Windows: %APPDATA%\ironsmith
+--   * macOS:   ~/Library/Application Support/ironsmith
+--   * Linux:   $XDG_CONFIG_HOME/ironsmith (default ~/.config/ironsmith)
+--
+--   Before 1.0 the TUI used ~/.ironsmith on Linux and macOS; settings and
+--   recent files from there are copied over once (see 'migrateLegacyConfig').
 getConfigDir :: IO FilePath
 getConfigDir = do
-    configDir <- getAppUserDataDirectory "ironsmith"
-    createDirectoryIfMissing True configDir 
+    configDir <- platformConfigDir
+    createDirectoryIfMissing True configDir
+    migrateLegacyConfig configDir
     return configDir
+
+platformConfigDir :: IO FilePath
+platformConfigDir
+    | os == "mingw32" = getAppUserDataDirectory "ironsmith"
+    | os == "darwin"  = (\h -> h </> "Library" </> "Application Support" </> "ironsmith") <$> getHomeDirectory
+    | otherwise       = getXdgDirectory XdgConfig "ironsmith"
+
+-- | Copy settings, recent files and the startup demo from the pre-1.0
+--   location (~/.ironsmith) if the new folder doesn't have settings yet.
+--   The old folder is left in place. Failures are ignored: the worst case
+--   is starting with default settings.
+migrateLegacyConfig :: FilePath -> IO ()
+migrateLegacyConfig newDir = do
+    legacy <- getAppUserDataDirectory "ironsmith"
+    alreadySet <- doesFileExist (newDir </> "ironsmith.toml")
+    legacyHas <- doesFileExist (legacy </> "ironsmith.toml")
+    when (legacy /= newDir && not alreadySet && legacyHas) $
+        forM_ ["ironsmith.toml", ".ironsmith_recents", "demo.irsm"] $ \f -> do
+            exists <- doesFileExist (legacy </> f)
+            when exists $ void $ tryIO (copyFile (legacy </> f) (newDir </> f))
 
 getCachePath :: IO FilePath
 getCachePath = do
@@ -129,14 +215,16 @@ loadRecents = do
     cachePath <- getCachePath
     exists <- doesFileExist cachePath
     if exists
-        then lines <$> readFile cachePath
+        then either (const []) (filter (not . null) . lines) <$> tryIO (readFileStrict cachePath)
         else return []
 
+-- | Put `path` at the top of the recent-files list. Failing to save the
+--   list is harmless, so it never throws.
 saveRecent :: FilePath -> [FilePath] -> IO [FilePath]
 saveRecent path oldRecents = do
     cachePath <- getCachePath
     let newRecents = take 5 $ nub (path : oldRecents)
-    writeFile cachePath (unlines newRecents)
+    _ <- tryIO (writeFileUtf8 cachePath (unlines newRecents))
     return newRecents
 
 -- | Bytecode as the little-endian f32 stream the viewer expects.
@@ -259,8 +347,12 @@ findIdentLine name code =
 -- | Parse then validate, sharing the error format both the live compiler
 --   and the OBJ exporter report to the editor.
 parseAndValidate :: String -> Either (String, Int) Script
-parseAndValidate code =
-    case parse pScript "editor" code of
+parseAndValidate = parseAndValidateNamed "editor"
+
+-- | 'parseAndValidate' with the file name used in syntax error headers.
+parseAndValidateNamed :: FilePath -> String -> Either (String, Int) Script
+parseAndValidateNamed name code =
+    case parse pScriptLines name code of
         Left bundle ->
             let errStr = errorBundlePretty bundle
                 firstErr = NE.head (bundleErrors bundle)
@@ -268,10 +360,16 @@ parseAndValidate code =
                 lineNum = unPos (sourceLine (pstateSourcePos posState))
             in Left (errStr, lineNum)
 
-        Right astScript ->
-            case validateScript astScript of
-                Left (ident, msg) -> Left (msg, findIdentLine ident code)
-                Right ()          -> Right astScript
+        Right numbered ->
+            let astScript = map snd numbered
+            in case validateScriptAt astScript of
+                -- Search for the name from the failing statement's first
+                -- line, so an earlier, valid use of it isn't highlighted.
+                Left (i, ident, msg) ->
+                    let from = fst (numbered !! i)
+                        within = findIdentLine ident (unlines (drop (from - 1) (lines code)))
+                    in Left (msg, if within > 0 then from + within - 1 else findIdentLine ident code)
+                Right () -> astScript <$ validateValues numbered
 
 -- | COMPILER BRIDGE
 compileAndSave :: (Float, Float, Float) -> Bool -> String -> IO (Maybe (String, Int))
@@ -316,8 +414,8 @@ exportModelToOBJ defaultColor code objPath resolution report =
 
         Right astScript -> do
             let bytecode = compileToBytecode defaultColor astScript
-            exportToOBJ bytecode objPath resolution report
-            return $ Right objPath
+            wrote <- exportToOBJ bytecode objPath resolution report
+            return $ if wrote then Right objPath else Left nothingToExport
 -- | Same as 'exportModelToOBJ', but writes a binary glTF (.glb) mesh that
 --   keeps each shape's paint colour and material (for three.js etc.).
 exportModelToGLB :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
@@ -327,5 +425,17 @@ exportModelToGLB defaultColor code glbPath resolution report =
 
         Right astScript -> do
             let bytecode = compileToBytecode defaultColor astScript
-            exportToGLB bytecode glbPath resolution report
-            return $ Right glbPath
+            wrote <- exportToGLB bytecode glbPath resolution report
+            return $ if wrote then Right glbPath else Left nothingToExport
+
+-- | Export error for a scene with no surface to mesh. No file is written.
+nothingToExport :: (String, Int)
+nothingToExport =
+    ("Nothing to export: the script draws no shapes (or none within "
+        ++ show (round exportRadius :: Int) ++ " units of the origin)", 0)
+
+-- | Smallest and largest mesh export resolutions accepted (grid cells
+--   across the model's longest side).
+minExportResolution, maxExportResolution :: Int
+minExportResolution = 8
+maxExportResolution = 1024

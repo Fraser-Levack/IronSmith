@@ -4,7 +4,7 @@
 -- materials, ready for three.js / Blender / any glTF viewer).
 --
 -- The scene is compiled to the same "bytecode" array that the GPU
--- raymarcher (IronSmith-Viewer/src/core.glsl, the `map` function) walks
+-- raymarcher (the generated `map` function, see IronSmith-Viewer/src/shader.rs) walks
 -- as a tiny stack machine. This module is a CPU-side port of that
 -- interpreter (evalSDF is distance-only; evalHit also tracks paint/material),
 -- which is then sampled on a grid and triangulated with Marching
@@ -22,6 +22,7 @@ module Exporter
     , sdCappedCone
     , evalSDF
     , estimateBounds
+    , exportRadius
     ) where
 
 import Data.Array.Unboxed (UArray, listArray, (!), bounds, rangeSize)
@@ -467,12 +468,14 @@ scanCell ((x0,y0,z0), (x1,y1,z1)) =
 --
 --   The mesh is indexed: each vertex is written once, just before the
 --   first face that uses it, and shared by every face around it.
-exportToOBJ :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO ()
+--
+--   Returns False, without creating the file, if the scene has no surface
+--   to mesh (it draws nothing, or nothing within 'exportRadius').
+exportToOBJ :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO Bool
 exportToOBJ bytecode path res report =
-    withFile path WriteMode $ \h ->
-        case exportGrid arr res of
-            Nothing -> report 1
-            Just (sdf, g) -> do
+    case exportGrid arr res of
+        Nothing -> report 1 >> return False
+        Just (sdf, g) -> True <$ withFile path WriteMode (\h -> do
                 grid <- sampleGrid sdf g report
                 ids <- newIORef IM.empty
                 count <- newIORef (0 :: Int)
@@ -493,7 +496,7 @@ exportToOBJ bytecode path res report =
                         nc <- vertexId c
                         hPutStrLn h ("f " ++ show na ++ " " ++ show nb ++ " " ++ show nc)
                     modifyIORef' ids (snd . IM.split (retiredBelow g i - 1))
-                    report (0.5 + 0.5 * fromIntegral (i+1) / fromIntegral (gNx g))
+                    report (0.5 + 0.5 * fromIntegral (i+1) / fromIntegral (gNx g)))
   where
     arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
     vline (x,y,z) = "v " ++ show x ++ " " ++ show y ++ " " ++ show z
@@ -544,10 +547,13 @@ type MatKey = (Int, Vec3)
 --   Colours are written as linear RGB, matching the viewer, which treats
 --   paint colours as linear and gamma-corrects at the end. Progress is
 --   reported in [0,1] (sampling first half, meshing second half).
-exportToGLB :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO ()
-exportToGLB bytecode path res report = do
-    groups <- case exportGrid arr res of
-        Nothing -> return []
+--
+--   Like 'exportToOBJ', returns False without writing anything if there is
+--   no surface to mesh.
+exportToGLB :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO Bool
+exportToGLB bytecode path res report =
+    case exportGrid arr res of
+        Nothing -> report 1 >> return False
         Just (sdf, g) -> do
             grid <- sampleGrid sdf g report
             let eps = 0.1 * gCell g
@@ -565,8 +571,8 @@ exportToGLB bytecode path res report = do
                         acc' `seq` report (0.5 + 0.5 * fromIntegral (i+1) / fromIntegral (gNx g))
                         return acc')
                     M.empty [0 .. gNx g - 1]
-            return (M.toList final)
-    BL.writeFile path (B.toLazyByteString (glbFile groups))
+            BL.writeFile path (B.toLazyByteString (glbFile (M.toList final)))
+            return True
   where
     arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
 

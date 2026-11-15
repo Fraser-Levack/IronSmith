@@ -1,9 +1,14 @@
 cabal-version:      2.4
 name:               ironsmith
 version:            0.1.0.0
-synopsis:           A 3D modeling scripting language
-author:             The IronSmith Forge
-maintainer:         user@example.com
+synopsis:           Code-driven 3D modelling: a TUI editor for the .irsm CSG language
+homepage:           https://github.com/Fraser-Levack/IronSmith
+bug-reports:        https://github.com/Fraser-Levack/IronSmith/issues
+license:            MIT
+license-file:       LICENSE
+author:             Fraser Levack
+maintainer:         Fraser Levack (https://github.com/Fraser-Levack)
+category:           Graphics
 
 executable ironsmith
     main-is:          Main.hs
@@ -17,7 +22,9 @@ executable ironsmith
                       AppUI,
                       AppEvents,
                       Selection,
-                      Cli
+                      Cli,
+                      Paths_ironsmith
+    autogen-modules:  Paths_ironsmith
 
     hs-source-dirs:   app, src
     default-language: Haskell2010

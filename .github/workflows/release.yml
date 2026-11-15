@@ -33,6 +33,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Never ship a build the test suites reject.
+      - name: Test (Haskell)
+        run: cabal test all
+
+      - name: Test (Rust)
+        working-directory: IronSmith-Viewer
+        run: cargo test
+
       - name: Read version
         id: version
         shell: bash
@@ -66,8 +74,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Package managers (winget, Scoop, Homebrew) pin each download by its
+      # SHA-256, so publish them alongside the archives.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.zip *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      # Created as a draft so the notes can be reviewed before publishing.
+      # Tags with a suffix (v1.0.0-rc.1) are marked as pre-releases.
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/**
           draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

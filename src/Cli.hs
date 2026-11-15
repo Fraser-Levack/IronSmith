@@ -14,23 +14,21 @@ import System.Exit (ExitCode(..), exitWith)
 import System.FilePath (replaceExtension, takeExtension)
 import Data.Char (toLower)
 import System.IO (hPutStrLn, stderr)
-import Text.Megaparsec (parse, errorBundlePretty)
 import Text.Read (readMaybe)
 import qualified Data.ByteString.Char8 as C8
 
 import AST (Script)
-import Parser (pScript)
-import Evaluator (validateScript, compileToBytecode)
+import Evaluator (compileToBytecode)
 import Exporter (estimateBounds)
 import AppCore
-import Config (loadConfig, cfgDefaultObjectColor, cfgExportResolution)
+import Config (loadConfig, readFileStrict, cfgDefaultObjectColor, cfgExportResolution)
 
 usage :: String
 usage = unlines
     [ "IronSmith - code-driven 3D modelling"
     , ""
     , "Usage:"
-    , "  ironsmith                              open the TUI editor"
+    , "  ironsmith [FILE.irsm]                  open the TUI editor (optionally on a file)"
     , "  ironsmith check  FILE.irsm             validate a script"
     , "  ironsmith render FILE.irsm [-o OUT.png] [--view YAW,PITCH,DIST[,X,Y,Z]]"
     , "                                         render a still image in the viewer"
@@ -38,6 +36,7 @@ usage = unlines
     , "                                         export a mesh: OBJ (geometry only) or"
     , "                                         GLB/glTF (keeps paint colours + materials)"
     , "  ironsmith help                         show this help"
+    , "  ironsmith --version                    show the version"
     , ""
     , "render: starts the viewer if it isn't running (and leaves it open so"
     , "  later renders are fast), shows the model there, and waits until the"
@@ -53,6 +52,7 @@ usage = unlines
 runCli :: [String] -> IO ()
 runCli args = case args of
     [cmd] | cmd `elem` ["help", "--help", "-h"] -> putStr usage
+    [cmd] | cmd `elem` ["version", "--version", "-V"] -> putStrLn ("ironsmith " ++ versionString)
     ["check", file] -> do
         script <- loadScript file
         let bytecode = compileToBytecode (0, 0, 0) script
@@ -69,7 +69,10 @@ runCli args = case args of
     ("export" : file : opts) -> withOptions opts $ \o -> do
         res <- case lookup "--res" o of
             Nothing -> return Nothing
-            Just r -> maybe (usageError ("bad --res '" ++ r ++ "'")) (return . Just) (readMaybe r)
+            Just r -> case readMaybe r of
+                Just n | n >= minExportResolution && n <= maxExportResolution -> return (Just n)
+                _ -> usageError ("bad --res '" ++ r ++ "' (expected a whole number from "
+                                 ++ show minExportResolution ++ " to " ++ show maxExportResolution ++ ")")
         fmt <- case map toLower <$> lookup "--format" o of
             Just "obj" -> return "obj"
             Just "glb" -> return "glb"
@@ -120,29 +123,32 @@ render file out view = do
 export :: String -> FilePath -> Maybe FilePath -> Maybe Int -> IO ()
 export fmt file out res = do
     _ <- loadScript file
-    code <- readFile file
+    code <- readFileStrict file
     cfg <- getConfigPath >>= loadConfig
     outPath <- makeAbsolute (fromMaybe (replaceExtension file fmt) out)
-    let resolution = fromMaybe (cfgExportResolution cfg) res
+    let resolution = clampExportResolution (fromMaybe (cfgExportResolution cfg) res)
     let exporter = if fmt == "glb" then exportModelToGLB else exportModelToOBJ
     result <- exporter (cfgDefaultObjectColor cfg) code outPath resolution (\_ -> return ())
     case result of
         Right p -> putStrLn ("OK: wrote " ++ p ++ " (resolution " ++ show resolution ++ ")")
+        Left (e, 0)    -> failWith 1 (file ++ ": " ++ e)
         Left (e, line) -> failWith 1 (file ++ ":" ++ show line ++ ": " ++ e)
 
 -- ─── HELPERS ────────────────────────────────────────────────────────────────
 
 -- | Read, parse and validate a script, exiting with a file:line error.
+--   Same checks as the editor ('parseAndValidateNamed').
 loadScript :: FilePath -> IO Script
 loadScript file = do
     exists <- doesFileExist file
     unless exists $ failWith 3 (file ++ ": no such file")
-    code <- readFile file
-    case parse pScript file code of
-        Left bundle -> failWith 1 (errorBundlePretty bundle)
-        Right script -> case validateScript script of
-            Left (ident, msg) -> failWith 1 (file ++ ":" ++ show (findIdentLine ident code) ++ ": " ++ msg)
-            Right () -> return script
+    code <- readFileStrict file
+    case parseAndValidateNamed file code of
+        -- Syntax errors are already "file:line:col:" pretty-printed.
+        Left (msg, line)
+            | (file ++ ":") `isPrefixOf` msg -> failWith 1 msg
+            | otherwise -> failWith 1 (file ++ ":" ++ show line ++ ": " ++ msg)
+        Right script -> return script
 
 -- | Bytecode that's just the halt (plus maybe light ops) draws nothing.
 drawsNothing :: [Float] -> Bool

@@ -49,7 +49,8 @@ spec = do
             let bytecode = compileToBytecode (1, 1, 1) [Draw (Sphere (Lit 5))]
                 path = "test_sphere_export.obj"
 
-            exportToOBJ bytecode path 8 (const (return ()))
+            wrote <- exportToOBJ bytecode path 8 (const (return ()))
+            wrote `shouldBe` True
 
             exists <- doesFileExist path
             exists `shouldBe` True
@@ -70,7 +71,7 @@ spec = do
             let bytecode = compileToBytecode (1, 1, 1)
                     [Draw (Move (Lit 20) (Lit 0) (Lit 0) (Sphere (Lit 0.5)))]
                 path = "test_small_export.obj"
-            exportToOBJ bytecode path 16 (const (return ()))
+            _ <- exportToOBJ bytecode path 16 (const (return ()))
             contents <- readFile path
             length contents `seq` removeFile path
             let verts = [ map read (words (drop 2 l)) :: [Float]
@@ -111,7 +112,7 @@ spec = do
                     [ Draw (Paint "red" [Sphere (Lit 2)])
                     , Draw (Paint "blue" [Material "neon" [Move (Lit 6) (Lit 0) (Lit 0) (Sphere (Lit 2))]]) ]
                 path = "test_export.glb"
-            exportToGLB bytecode path 16 (const (return ()))
+            _ <- exportToGLB bytecode path 16 (const (return ()))
             bytes <- BS.readFile path
             removeFile path
             BS.take 4 bytes `shouldBe` BS.pack [0x67, 0x6C, 0x54, 0x46] -- "glTF"
@@ -126,12 +127,18 @@ spec = do
             json `shouldSatisfy` isInfixOf "\"indices\""
             json `shouldSatisfy` isInfixOf "\"componentType\":5125"
 
-        it "writes a valid (empty) GLB for a scene with no shapes" $ do
+        it "writes nothing for a scene with no shapes" $ do
             let path = "test_empty.glb"
-            exportToGLB (compileToBytecode (1, 1, 1) []) path 8 (const (return ()))
-            bytes <- BS.readFile path
-            removeFile path
-            le32 (BS.take 4 (BS.drop 8 bytes)) `shouldBe` BS.length bytes
+            wrote <- exportToGLB (compileToBytecode (1, 1, 1) []) path 8 (const (return ()))
+            wrote `shouldBe` False
+            doesFileExist path `shouldReturn` False
+
+    describe "exportToOBJ with no shapes" $
+        it "reports False and creates no file" $ do
+            let path = "test_empty.obj"
+            wrote <- exportToOBJ (compileToBytecode (1, 1, 1) []) path 8 (const (return ()))
+            wrote `shouldBe` False
+            doesFileExist path `shouldReturn` False
 
     describe "estimateBounds" $ do
         it "finds an offset box to within a fraction of a unit" $ do

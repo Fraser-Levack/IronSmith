@@ -23,7 +23,14 @@ echo "==> Building ironsmith (Haskell, cabal)..."
 (cd "$REPO_ROOT" && cabal build)
 IRONSMITH_EXE="$(cd "$REPO_ROOT" && cabal list-bin ironsmith)"
 
-PKG_NAME="IronSmith-v${VERSION}-${PLATFORM}"
+# Include the CPU architecture: macOS runners are arm64, most Linux x86_64.
+case "$(uname -m)" in
+    x86_64|amd64)  ARCH="x86_64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *)             ARCH="$(uname -m)" ;;
+esac
+
+PKG_NAME="IronSmith-v${VERSION}-${PLATFORM}-${ARCH}"
 PKG_DIR="$REPO_ROOT/dist/$PKG_NAME"
 
 rm -rf "$PKG_DIR"

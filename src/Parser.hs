@@ -5,7 +5,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import Data.Void (Void)
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Control.Monad.Combinators.Expr
 
 type Parser = Parsec Void String
@@ -283,8 +283,18 @@ pMaterial = do
     _ <- symbol ")" <?> "closing ')' for material"
     return (Material mat shapes)
 
+-- | A bare shape variable. An identifier followed by '(' is a call to a
+--   function that doesn't exist (every real one was tried before this), so
+--   report that by name instead of an "unexpected '('" further along.
 pShapeRef :: Parser Shape
-pShapeRef = ShapeRef <$> identifier <?> "shape variable name"
+--   (The error is reported at the '(', not the name: megaparsec keeps the
+--   furthest error among alternatives, and the statement parser's own
+--   attempt at `name =` already failed there.)
+pShapeRef = do
+    name <- identifier <?> "shape variable name"
+    isCall <- option False (True <$ lookAhead (char '('))
+    when isCall $ fail ("unknown shape function '" ++ name ++ "'")
+    return (ShapeRef name)
 
 pShape :: Parser Shape
 pShape = pGroup <|>
@@ -309,17 +319,21 @@ pShape = pGroup <|>
 -------------------------------------------------
 -- 3. STATEMENT PARSERS 
 -------------------------------------------------
-pAssign :: Parser Statement
-pAssign = try $ do
-    name <- identifier
-    _ <- symbol "="
-    Assign name <$> pExpr <?> "number expression"
-
-pAssignShape :: Parser Statement
-pAssignShape = try $ do
-    name <- identifier
-    _ <- symbol "="
-    AssignShape name <$> pShape <?> "shape expression"
+-- | `name = <number expression>` or `name = <shape>`.
+--
+--   Only `name =` is backtracked over. Once it's seen the statement is
+--   committed, so an error on the right-hand side (e.g. `body = cube(1, 2)`)
+--   is reported where it is instead of as "unexpected '='". A right-hand
+--   side that starts with a call (`ident(`) is a shape; anything else is a
+--   number expression. `a = b` parses as a number but 'validateScript' and
+--   the evaluator treat it as a shape alias when `b` is a shape.
+pAssignment :: Parser Statement
+pAssignment = do
+    name <- try (identifier <* notFollowedBy (string "==") <* symbol "=")
+    isShape <- option False (True <$ try (lookAhead (identifier *> char '(')))
+    if isShape
+        then AssignShape name <$> (pShape <?> "shape expression")
+        else Assign name <$> (pExpr <?> "number expression")
 
 pDraw :: Parser Statement
 pDraw = Draw <$> pShape
@@ -367,10 +381,17 @@ pCameraKey = do
     return (CameraKey t yaw pitch dist tx ty tz)
 
 pStatement :: Parser Statement
-pStatement = pLight <|> pCameraKey <|> pAssign <|> pAssignShape <|> pDraw <?> "statement (e.g., shape = cube(...) or cube(...))"
+pStatement = pLight <|> pCameraKey <|> pAssignment <|> pDraw <?> "statement (e.g., shape = cube(...) or cube(...))"
 
 -------------------------------------------------
--- 4. SCRIPT PARSER 
+-- 4. SCRIPT PARSER
 -------------------------------------------------
 pScript :: Parser Script
-pScript = sc *> many pStatement <* eof
+pScript = map snd <$> pScriptLines
+
+-- | The script with each statement's (1-based) starting line, so checks
+--   that run after parsing (see 'Evaluator.validateValues') can point at it.
+pScriptLines :: Parser [(Int, Statement)]
+pScriptLines = sc *> many ((,) <$> lineNo <*> pStatement) <* eof
+  where
+    lineNo = unPos . sourceLine <$> getSourcePos

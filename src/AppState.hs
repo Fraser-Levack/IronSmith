@@ -7,7 +7,7 @@ import System.Process (ProcessHandle)
 import Data.Char (toLower, toUpper)
 import Data.List (isInfixOf, intercalate)
 import Data.Maybe (fromMaybe)
-import Config (IronConfig, defaultConfig, cfgKeybindings, defaultKeybindings)
+import Config (IronConfig, defaultConfig, cfgKeybindings, defaultKeybindings, cfgAutoOrbit)
 
 data CustomEvent = CompileTimerFired Int
                  | UndoBoundary Int -- edit version that has been followed by a pause
@@ -25,6 +25,17 @@ data Name = CodeEditor | SaveEditor | OpenEditor | ConfigEditor | PaletteEditor
 data AppStatus = Normal | Saved | Exported FilePath | FilterSet String | Info String | ErrorMsg String Int
 
 data ViewerMode = OrbitMode | StaticMode | FlyMode
+    deriving (Eq, Show)
+
+-- | The viewer mode the config starts the viewer in (see 'sendConfig'),
+--   so the editor's mode indicator matches the viewer.
+initialViewerMode :: IronConfig -> ViewerMode
+initialViewerMode cfg = if cfgAutoOrbit cfg then OrbitMode else StaticMode
+
+-- | What the unsaved-changes prompt does once the user saves or discards.
+data AfterPrompt = ToSplash          -- Esc out of the editor
+                 | ToQuit            -- Ctrl+Q
+                 | ToOpen FilePath   -- open another file over this one
     deriving (Eq, Show)
 
 data AppState = AppState
@@ -52,6 +63,7 @@ data AppState = AppState
     , _selAnchor    :: Maybe (Int, Int) -- code editor selection anchor (row, col); the cursor is the other end
     , _mouseDragging :: Bool -- left button held in the code editor (drag-to-select in progress)
     , _clipboard    :: String -- internal clipboard for copy/cut/paste (also mirrored to the OS clipboard)
+    , _afterPrompt  :: Maybe AfterPrompt -- set while the unsaved-changes prompt (or the Save As it leads to) is open
     }
 
 editorLens :: Lens' AppState (E.Editor String Name)
@@ -73,7 +85,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdExportGLB | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdExportGLB | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste | CmdRelaunchViewer
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -94,6 +106,7 @@ commandConfigKey CmdRedo           = "redo"
 commandConfigKey CmdCopy           = "copy"
 commandConfigKey CmdCut            = "cut"
 commandConfigKey CmdPaste          = "paste"
+commandConfigKey CmdRelaunchViewer = "relaunch_viewer"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -113,6 +126,7 @@ commandLabel CmdRedo             = "Redo"
 commandLabel CmdCopy             = "Copy (selection or line)"
 commandLabel CmdCut              = "Cut (selection or line)"
 commandLabel CmdPaste            = "Paste"
+commandLabel CmdRelaunchViewer   = "Relaunch Viewer (if its window was closed)"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String

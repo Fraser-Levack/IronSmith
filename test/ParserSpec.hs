@@ -211,3 +211,31 @@ spec = do
         it "still allows light as a variable name" $
             parseOk pScript "light = 3\nsphere(light)"
                 `shouldBe` Just [Assign "light" (Lit 3), Draw (Sphere (Var "light"))]
+
+    describe "assignment error reporting" $ do
+        -- These used to report "unexpected '='" at the start of the line,
+        -- because the whole assignment backtracked on any error.
+        it "reports too few arguments inside a shape assignment" $
+            parseErr pScript "body = cube(1, 2)" `shouldContain` "too few arguments"
+
+        it "reports a broken expression where it breaks" $ do
+            let err = parseErr pScript "r = 2\nw = r * (3 + )\nsphere(w)"
+            err `shouldContain` "2:14"
+            err `shouldNotContain` "unexpected '='"
+
+        it "names an unknown shape function" $
+            parseErr pScript "a = move(1, 2, 3, spere(2))" `shouldContain` "unknown shape function 'spere'"
+
+        it "names an unknown shape function in a draw" $
+            parseErr pScript "spheer(2)" `shouldContain` "unknown shape function 'spheer'"
+
+        it "still parses number, shape and alias assignments" $
+            parseOk pScript "n = 2 * 3\ns = sphere(n)\nt = s"
+                `shouldBe` Just [ Assign "n" (Mul (Lit 2) (Lit 3))
+                                , AssignShape "s" (Sphere (Var "n"))
+                                , Assign "t" (Var "s") ]
+
+    describe "pScriptLines" $
+        it "records each statement's starting line" $
+            fmap (map fst) (parseOk pScriptLines "a = 1\n\n// note\nsphere(a)\nmove(1, 2, 3,\n  cube(1, 1, 1))")
+                `shouldBe` Just [1, 4, 5]
