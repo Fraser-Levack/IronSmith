@@ -44,6 +44,7 @@ defaultKeybindings =
     , ("toggle_animation", "ctrl+a")
     , ("export_video",     "ctrl+shift+v")
     , ("relaunch_viewer",  "ctrl+l")
+    , ("export_stl",       "")  -- no default shortcut: command palette (Ctrl+P)
     , ("undo",             "ctrl+z")
     , ("redo",             "ctrl+y")
     , ("copy",             "ctrl+c")
@@ -152,6 +153,7 @@ defaultConfigText = unlines $
     , "# Keys: a single character, or one of:"
     , "#   esc enter tab space up down left right"
     , "#   backspace delete f1 .. f12"
+    , "# Leave a value empty for no shortcut (the command palette still has it)."
     ] ++ [ key ++ " = " ++ combo | (key, combo) <- defaultKeybindings ]
 
 -- ─── PARSER ──────────────────────────────────────────────────────────────────

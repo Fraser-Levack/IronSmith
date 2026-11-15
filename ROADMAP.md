@@ -30,20 +30,19 @@ Bugs that lose work, crash, or silently do the wrong thing.
 - [x] Release workflow runs tests, publishes checksums, marks `-rc` tags as pre-releases
 - [x] README/cabal metadata fixes, dead files removed, CHANGELOG started
 
-### Phase 2 — Language surface for 1.0
+### Phase 2 — Language surface for 1.0 ✅
 
 Decide what 1.0 promises *before* tagging it; additions later are fine,
 changes are not.
 
-- [ ] **Smooth CSG**: `smooth_union(k, a, b)` / `smooth_difference` / `smooth_intersection`.
-  The signature SDF feature, and only one new opcode family
-  (update `generate_program`, `evalSDF` **and** `evalHit`).
-- [ ] **Mouse control in the viewer window**: drag to orbit, right/middle-drag to pan.
-  Today only the wheel works there; everything else goes through the editor.
-- [ ] **STL export** (`--format stl`): what 3D-printing users expect; reuses the mesher.
-- [ ] Accept `.5` and `5.` as numbers (currently a parse error).
-- [ ] Freeze the grammar: write down reserved words (`light`, `camera`, primitive
-  names) so future keywords can't break existing variable names.
+- [x] **Smooth CSG**: `smooth_union(k, a, b)` / `smooth_difference` / `smooth_intersection`
+  (opcodes 13–15), with blended colours, in the viewer and all exporters.
+- [x] **Mouse control in the viewer window**: left-drag orbits, right/middle-drag pans.
+- [x] **STL export** (`--format stl`), Z-up for slicers.
+- [x] Accept `.5` and `5.` as numbers.
+- [x] Freeze the grammar: `for in while if else fn def return let true false import`
+  are reserved. Function names (`cube`, `light`...) stay usable as variables
+  because they're only special before `(`.
 
 ### Phase 3 — Should-fix polish
 
@@ -59,8 +58,12 @@ Not blocking, but worth doing before or soon after 1.0.
 - [ ] Viewer: render only when something changes (orbiting, animating, new
   scene) instead of redrawing continuously when idle.
 - [ ] Viewer: request the high-performance GPU on laptops with two GPUs.
-- [ ] Editor/viewer version handshake, so a stale `ironsmith-viewer` on PATH
-  is reported instead of failing in confusing ways.
+- [ ] **Editor/viewer version handshake**, so a stale `ironsmith-viewer` is
+  reported instead of failing in confusing ways. Now more important: a
+  pre-1.0 viewer silently ignores the smooth-CSG opcodes and draws the wrong
+  shape (seen in testing, from an old copy next to the cabal-built exe).
+- [ ] glTF per-vertex colours (`COLOR_0`) so smooth-CSG colour blends export
+  as smooth gradients instead of 16 bands of materials.
 - [ ] Run `hlint` in CI (it isn't installed on the dev machine yet).
 - [ ] **Unpin Rust.** The toolchain is pinned to 1.86.0 (`rust-toolchain.toml`)
   because winit 0.29's `objc2 0.4` no longer compiles on current rustc on

@@ -85,7 +85,7 @@ paletteInputLens f st = (\e -> st { _paletteInput = e }) <$> f (_paletteInput st
 -- Shared between AppEvents (keybinding dispatch) and AppUi (palette rendering).
 
 -- | Commands available via keybindings and the command palette.
-data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdExportGLB | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste | CmdRelaunchViewer
+data CommandId = CmdCommandPalette | CmdSave | CmdOpenFile | CmdSettings | CmdCycleViewMode | CmdResetCamera | CmdExportOBJ | CmdExportGLB | CmdCycleFilter | CmdToggleAnimation | CmdExportVideo | CmdUndo | CmdRedo | CmdCopy | CmdCut | CmdPaste | CmdRelaunchViewer | CmdExportSTL
     deriving (Eq, Enum, Bounded, Show)
 
 -- | The id used to look up/override this command's keybinding in the config file.
@@ -107,6 +107,7 @@ commandConfigKey CmdCopy           = "copy"
 commandConfigKey CmdCut            = "cut"
 commandConfigKey CmdPaste          = "paste"
 commandConfigKey CmdRelaunchViewer = "relaunch_viewer"
+commandConfigKey CmdExportSTL      = "export_stl"
 
 -- | Human-readable label shown in the command palette.
 commandLabel :: CommandId -> String
@@ -127,6 +128,7 @@ commandLabel CmdCopy             = "Copy (selection or line)"
 commandLabel CmdCut              = "Cut (selection or line)"
 commandLabel CmdPaste            = "Paste"
 commandLabel CmdRelaunchViewer   = "Relaunch Viewer (if its window was closed)"
+commandLabel CmdExportSTL        = "Export to .STL (for 3D printing)"
 
 -- | The configured (or default) key combo string for a command, e.g. "ctrl+s".
 keybindingFor :: IronConfig -> CommandId -> String

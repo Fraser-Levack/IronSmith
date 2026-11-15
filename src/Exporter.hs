@@ -14,6 +14,10 @@
 module Exporter
     ( exportToOBJ
     , exportToGLB
+    , exportToSTL
+    , smoothUnion
+    , smoothDifference
+    , smoothIntersection
     , evalHit
     , sdSphere
     , sdBox
@@ -31,7 +35,7 @@ import Data.Array.MArray (newArray, writeArray, freeze)
 import Data.IORef (newIORef, readIORef, writeIORef, modifyIORef')
 import Data.List (foldl')
 import Control.Monad (forM_, foldM)
-import System.IO (withFile, IOMode(WriteMode), Handle, hPutStrLn)
+import System.IO (withFile, withBinaryFile, IOMode(WriteMode), Handle, hPutStrLn, hSeek, SeekMode(AbsoluteSeek))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Builder as B
@@ -106,8 +110,6 @@ sdCappedCone (px,py,pz) h r1 r2 =
         cbY = qy - k1y + k2y*t
         s = if cbX < 0 && caY < 0 then -1 else 1
     in s * sqrt (min (caX*caX + caY*caY) (cbX*cbX + cbY*cbY))
-  where
-    clamp01 x = max 0 (min 1 x)
 
 -- | mod(p + 0.5*c, c) - 0.5*c per axis, for axes where c > 0 (opRep in core.glsl)
 opRep :: Vec3 -> Vec3 -> Vec3
@@ -117,6 +119,32 @@ opRep (px,py,pz) (cx,cy,cz) = (rep px cx, rep py cy, rep pz cz)
       | c > 0     = glslMod (p + 0.5*c) c - 0.5*c
       | otherwise = p
     glslMod x y = x - y * fromIntegral (floor (x/y) :: Int)
+
+-- ─── SMOOTH CSG (opSmoothU / opSmoothS / opSmoothI in shader.rs) ──────────────
+--
+-- Polynomial smooth min/max: within `k` of where the two surfaces meet,
+-- the result bulges out (union) or rounds off (difference, intersection)
+-- instead of meeting at a sharp crease. k = 0 gives the plain operation.
+-- Each returns the distance and the blend weight h of the *first* operand
+-- (1 = all a, 0 = all b), which the colour/material blend also uses.
+
+smoothUnion, smoothDifference, smoothIntersection :: Float -> Float -> Float -> (Float, Float)
+smoothUnion k a b =
+    let h = clamp01 (0.5 + 0.5 * (b - a) / max k 1e-6)
+    in (mixF b a h - k * h * (1 - h), h)
+smoothDifference k a b =
+    let h = clamp01 (0.5 - 0.5 * (a + b) / max k 1e-6)
+    in (mixF a (-b) h + k * h * (1 - h), 1)
+smoothIntersection k a b =
+    let h = clamp01 (0.5 - 0.5 * (b - a) / max k 1e-6)
+    in (mixF b a h + k * h * (1 - h), h)
+
+-- | GLSL mix(x, y, t).
+mixF :: Float -> Float -> Float -> Float
+mixF x y t = x + (y - x) * t
+
+clamp01 :: Float -> Float
+clamp01 = max 0 . min 1
 
 rotX, rotY, rotZ :: (Float, Float) -> Vec3 -> Vec3
 rotX (c,s) (x,y,z) = (x, y*c - z*s, y*s + z*c)
@@ -154,6 +182,11 @@ evalSDF instrs p0 = go 0 p0 1.0 [] []
             12 -> case hits of
                     (b:a:rest) -> go (pc+1) p scale (max a b : rest) xforms
                     _          -> go (pc+1) p scale hits xforms
+            -- Smooth ops: the blend radius scales with the shapes, like
+            -- their distances do (k * current_scale in the shader).
+            13 -> smooth smoothUnion
+            14 -> smooth smoothDifference
+            15 -> smooth smoothIntersection
             20 -> let p' = rotX (at pc 1, at pc 2) p in go (pc+1) p' scale hits ((p,scale):xforms)
             21 -> let p' = rotY (at pc 1, at pc 2) p in go (pc+1) p' scale hits ((p,scale):xforms)
             22 -> let p' = rotZ (at pc 1, at pc 2) p in go (pc+1) p' scale hits ((p,scale):xforms)
@@ -174,6 +207,10 @@ evalSDF instrs p0 = go 0 p0 1.0 [] []
             40 -> go (pc+1) p scale hits xforms
             41 -> go (pc+1) p scale hits xforms
             _  -> finish hits
+      where
+        smooth f = case hits of
+            (b:a:rest) -> go (pc+1) p scale (fst (f (at pc 1 * scale) a b) : rest) xforms
+            _          -> go (pc+1) p scale hits xforms
 
     finish (d:_) = d
     finish []    = 999999.0
@@ -214,6 +251,9 @@ evalHit instrs p0 = go 0 p0 1.0 (0.8, 0.8, 0.8) [] [] []
             10 -> binop (\a@(da,_,_) b@(db,_,_) -> if da < db then a else b)
             11 -> binop (\a@(da,ca,ma) (db,_,_) -> if da > -db then a else (-db, ca, ma))
             12 -> binop (\a@(da,_,_) b@(db,_,_) -> if da > db then a else b)
+            13 -> binop (smoothHit smoothUnion (at pc 1 * scale))
+            14 -> binop (smoothHit smoothDifference (at pc 1 * scale))
+            15 -> binop (smoothHit smoothIntersection (at pc 1 * scale))
             20 -> withP 1 (rotX (at pc 1, at pc 2) p) scale
             21 -> withP 1 (rotY (at pc 1, at pc 2) p) scale
             22 -> withP 1 (rotZ (at pc 1, at pc 2) p) scale
@@ -235,6 +275,25 @@ evalHit instrs p0 = go 0 p0 1.0 (0.8, 0.8, 0.8) [] [] []
 
     finish (h:_) = h
     finish []    = (999999.0, (0.8, 0.8, 0.8), 0)
+
+    -- Colours blend with the same weight as the distance; the material
+    -- (which can't blend) goes to whichever side dominates. A smooth
+    -- difference keeps the colour of the shape being cut, like opS.
+    --
+    -- Unlike the viewer, the colour weight is rounded to 1/'colourBlendSteps':
+    -- the GLB exporter makes one material per distinct colour, and a smooth
+    -- seam would otherwise give nearly every triangle its own (14,702
+    -- materials for a two-sphere blob). Pure colours (h = 0 or 1) stay exact.
+    smoothHit f k (da, ca, ma) (db, cb, mb) =
+        let (d, h) = f k da db
+            steps = fromIntegral colourBlendSteps
+            hq = fromIntegral (round (h * steps) :: Int) / steps
+        in (d, vmix cb ca hq, if h > 0.5 then ma else mb)
+    vmix (x1,y1,z1) (x2,y2,z2) t = (mixF x1 x2 t, mixF y1 y2 t, mixF z1 z2 t)
+
+-- | Colour bands across a smooth-CSG seam in mesh exports (see 'evalHit').
+colourBlendSteps :: Int
+colourBlendSteps = 16
 
 -- ─── SAMPLING GRID ─────────────────────────────────────────────────────────────
 
@@ -500,6 +559,50 @@ exportToOBJ bytecode path res report =
   where
     arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
     vline (x,y,z) = "v " ++ show x ++ " " ++ show y ++ " " ++ show z
+
+-- ─── STL OUTPUT ────────────────────────────────────────────────────────────────
+
+-- | Mesh the scene like 'exportToOBJ' and write it as a binary STL, the
+--   format 3D-printing slicers expect. Geometry only (STL has no colours).
+--
+--   STL has no "up" axis, but slicers (Cura, PrusaSlicer, Bambu Studio...)
+--   treat +Z as up, so the model is rotated from IronSmith's Y-up to Z-up
+--   (x, y, z) -> (x, -z, y): a proper rotation, so windings and normals
+--   stay outward-facing. Units are written as-is; slicers read them as mm.
+--
+--   Triangles are streamed slab by slab; the count in the header is
+--   patched in at the end. Returns False, writing nothing, if there's no
+--   surface to mesh.
+exportToSTL :: [Float] -> FilePath -> Int -> (Float -> IO ()) -> IO Bool
+exportToSTL bytecode path res report =
+    case exportGrid arr res of
+        Nothing -> report 1 >> return False
+        Just (sdf, g) -> do
+            grid <- sampleGrid sdf g report
+            count <- newIORef (0 :: Int)
+            withBinaryFile path WriteMode $ \h -> do
+                -- 80-byte header (must not start with "solid", which marks
+                -- ASCII STL) followed by the triangle count.
+                B.hPutBuilder h (B.byteString stlHeader <> B.word32LE 0)
+                forM_ [0 .. gNx g - 1] $ \i -> do
+                    let tris = slabTriangles g grid i
+                    B.hPutBuilder h (foldMap stlTriangle tris)
+                    modifyIORef' count (+ length tris)
+                    report (0.5 + 0.5 * fromIntegral (i+1) / fromIntegral (gNx g))
+                n <- readIORef count
+                hSeek h AbsoluteSeek 80
+                B.hPutBuilder h (B.word32LE (fromIntegral n))
+            return True
+  where
+    arr = listArray (0, length bytecode - 1) bytecode :: UArray Int Float
+    stlHeader = BS.take 80 (BS.append (BS.pack (map (fromIntegral . fromEnum) "IronSmith binary STL, Z up"))
+                                      (BS.replicate 80 32))
+    zUp (x, y, z) = (x, -z, y)
+    stlTriangle (a, b, c) =
+        let pa = zUp (mvPos a); pb = zUp (mvPos b); pc = zUp (mvPos c)
+            n = cross (vsub pb pa) (vsub pc pa)
+            normal = if vlength n > 0 then vnorm n else (0, 0, 0)
+        in foldMap vec3LE [normal, pa, pb, pc] <> B.word16LE 0
 
 -- ─── GLB (BINARY glTF 2.0) OUTPUT ──────────────────────────────────────────────
 

@@ -199,6 +199,10 @@ spec = do
                 , "intersection(a, b)"
                 , "difference(cube(10, 10, 10), sphere(6))"
                 , "group(a, b, torus(4, 1))"
+                , "smooth_union(0.5, a, b)"
+                , "smooth_difference(0.5, a, b)"
+                , "smooth_intersection(0.5, a, b)"
+                , "half2 = .5"
                 , "paint(#FF5733, a)"
                 , "paint(red, b)"
                 , "material(metal, a)"
@@ -206,7 +210,7 @@ spec = do
                 , "light(10, 20, 5, 0.5)"
                 , "camera(0, 45, 20, 15)"
                 , "camera(4, 90, 20, 15, 0, 1, 0)"
-                ])) `shouldBe` Just 23
+                ])) `shouldBe` Just 27
 
         it "still allows light as a variable name" $
             parseOk pScript "light = 3\nsphere(light)"
@@ -239,3 +243,44 @@ spec = do
         it "records each statement's starting line" $
             fmap (map fst) (parseOk pScriptLines "a = 1\n\n// note\nsphere(a)\nmove(1, 2, 3,\n  cube(1, 1, 1))")
                 `shouldBe` Just [1, 4, 5]
+
+    describe "smooth CSG" $ do
+        it "parses smooth_union with a blend radius" $
+            parseOk pShape "smooth_union(0.5, sphere(1), cube(1, 1, 1))"
+                `shouldBe` Just (SmoothUnion (Lit 0.5) (Sphere (Lit 1)) (Cube (Lit 1) (Lit 1) (Lit 1)))
+
+        it "parses smooth_difference and smooth_intersection" $ do
+            parseOk pShape "smooth_difference(k, a, b)"
+                `shouldBe` Just (SmoothDifference (Var "k") (ShapeRef "a") (ShapeRef "b"))
+            parseOk pShape "smooth_intersection(1, a, b)"
+                `shouldBe` Just (SmoothIntersection (Lit 1) (ShapeRef "a") (ShapeRef "b"))
+
+        it "explains a missing blend radius" $
+            parseErr pScript "smooth_union(sphere(1), sphere(2))"
+                `shouldContain` "smooth_union(blend, shape_a, shape_b)"
+
+    describe "number literals" $ do
+        it "accepts a leading or trailing decimal point" $ do
+            parseOk pExpr ".5" `shouldBe` Just (Lit 0.5)
+            parseOk pExpr "5." `shouldBe` Just (Lit 5)
+            parseOk pExpr "-.25" `shouldBe` Just (Lit (-0.25))
+
+        it "still accepts integers, decimals and exponents" $ do
+            parseOk pExpr "12" `shouldBe` Just (Lit 12)
+            parseOk pExpr "1.5" `shouldBe` Just (Lit 1.5)
+            parseOk pExpr "1e3" `shouldBe` Just (Lit 1000)
+            parseOk pExpr "2.5E-1" `shouldBe` Just (Lit 0.25)
+
+        it "rejects a lone decimal point" $
+            parseOk pExpr "." `shouldBe` Nothing
+
+    describe "reserved words" $ do
+        it "rejects a reserved word as a variable name, saying why" $
+            parseErr pScript "for = 3" `shouldContain` "'for' is a reserved word"
+
+        it "rejects a reserved word used as a value" $
+            parseErr pScript "x = 1\nsphere(in)" `shouldContain` "'in' is a reserved word"
+
+        it "allows names that merely start with a reserved word" $
+            parseOk pScript "format = 2\nsphere(format)"
+                `shouldBe` Just [Assign "format" (Lit 2), Draw (Sphere (Var "format"))]

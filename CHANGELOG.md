@@ -23,11 +23,24 @@ in 1.x keeps working in every later 1.x release.
   (macOS), instead of `~/.ironsmith`. Settings and recent files are copied
   over automatically on first run. Windows is unchanged
   (`%APPDATA%\ironsmith`).
+- **Reserved words**: `for in while if else fn def return let true false
+  import` can no longer be used as names, so loops and functions can be
+  added in 1.x without breaking scripts.
 - The unused `default_material` and `editor_line_wrap` settings were removed
   (they never had any effect; old config files with them still load).
 
 ### Added
 
+- **Smooth CSG**: `smooth_union(k, a, b)`, `smooth_difference(k, a, b)` and
+  `smooth_intersection(k, a, b)` round off joins over blend radius `k`, with
+  paint colours fading across the seam. Supported by the viewer and all mesh
+  exports.
+- **Mouse control in the viewer window**: left-drag orbits, right- or
+  middle-drag pans (the point under the cursor stays under it), the wheel or
+  a trackpad zooms. Auto-orbit pauses while dragging.
+- **STL export** for 3D printing (`--format stl`, `-o model.stl`, or the
+  command palette), rotated to Z-up for slicers.
+- Numbers can be written `.5` and `5.` as well as `0.5` and `5`.
 - **Post-processing filters**: user-editable GLSL filters in the config
   folder, with built-in `edge_detection`, `heatmap`, `ascii` and
   `passthrough` examples (Ctrl+F cycles them).

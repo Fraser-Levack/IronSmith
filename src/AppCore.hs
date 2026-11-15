@@ -24,7 +24,7 @@ import Text.Megaparsec.Pos (sourceLine, unPos)
 import AST
 import Parser
 import Evaluator
-import Exporter (exportToOBJ, exportToGLB, exportRadius)
+import Exporter (exportToOBJ, exportToGLB, exportToSTL, exportRadius)
 import Config
 
 import System.Process (ProcessHandle, CreateProcess(..), createProcess, proc, StdStream(CreatePipe, Inherit, NoStream), terminateProcess, getProcessExitCode)
@@ -406,27 +406,32 @@ scriptHasAnimation = not . null . cameraTrack
 
 -- | EXPORT BRIDGE
 --   Parses and compiles the script just like 'compileAndSave', then meshes
---   the resulting SDF scene and writes it out as a Wavefront .obj file.
+--   the resulting SDF scene with `exporter` and writes it to `outPath`.
+--   Fails (writing nothing) if the script has errors or draws nothing.
+exportModelWith
+    :: ([Float] -> FilePath -> Int -> (Float -> IO ()) -> IO Bool)
+    -> (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ())
+    -> IO (Either (String, Int) FilePath)
+exportModelWith exporter defaultColor code outPath resolution report =
+    case parseAndValidate code of
+        Left err -> return (Left err)
+        Right astScript -> do
+            let bytecode = compileToBytecode defaultColor astScript
+            wrote <- exporter bytecode outPath resolution report
+            return $ if wrote then Right outPath else Left nothingToExport
+
+-- | Wavefront .obj: geometry only.
 exportModelToOBJ :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
-exportModelToOBJ defaultColor code objPath resolution report =
-    case parseAndValidate code of
-        Left err -> return (Left err)
+exportModelToOBJ = exportModelWith exportToOBJ
 
-        Right astScript -> do
-            let bytecode = compileToBytecode defaultColor astScript
-            wrote <- exportToOBJ bytecode objPath resolution report
-            return $ if wrote then Right objPath else Left nothingToExport
--- | Same as 'exportModelToOBJ', but writes a binary glTF (.glb) mesh that
---   keeps each shape's paint colour and material (for three.js etc.).
+-- | Binary glTF (.glb): keeps each shape's paint colour and material
+--   (for three.js, Blender etc.).
 exportModelToGLB :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
-exportModelToGLB defaultColor code glbPath resolution report =
-    case parseAndValidate code of
-        Left err -> return (Left err)
+exportModelToGLB = exportModelWith exportToGLB
 
-        Right astScript -> do
-            let bytecode = compileToBytecode defaultColor astScript
-            wrote <- exportToGLB bytecode glbPath resolution report
-            return $ if wrote then Right glbPath else Left nothingToExport
+-- | Binary STL for 3D printing: geometry only, rotated to Z-up.
+exportModelToSTL :: (Float, Float, Float) -> String -> FilePath -> Int -> (Float -> IO ()) -> IO (Either (String, Int) FilePath)
+exportModelToSTL = exportModelWith exportToSTL
 
 -- | Export error for a scene with no surface to mesh. No file is written.
 nothingToExport :: (String, Int)

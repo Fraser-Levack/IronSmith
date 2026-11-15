@@ -350,6 +350,9 @@ runCommand chan CmdExportOBJ = startMeshExport chan "obj" exportModelToOBJ
 -- Coloured mesh for the web (three.js) etc.: keeps paint() and material().
 runCommand chan CmdExportGLB = startMeshExport chan "glb" exportModelToGLB
 
+-- Watertight mesh for slicers, rotated to Z-up.
+runCommand chan CmdExportSTL = startMeshExport chan "stl" exportModelToSTL
+
 -- Toggle looping playback of the script's camera(...) animation. The
 -- keyframe track itself is (re)sent on every compile, so the viewer
 -- already has the latest one by the time this runs.

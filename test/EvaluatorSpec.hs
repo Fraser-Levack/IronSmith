@@ -314,3 +314,21 @@ spec = do
             fmap snd (either Just (const Nothing) (validateValues (lined
                 [ Light (Div (Lit 1) (Lit 0)) (Lit 1) (Lit 1) (Lit 1) ])))
                 `shouldBe` Just 1
+
+    describe "smooth CSG compilation" $ do
+        it "emits the blend radius with the smooth opcode" $
+            compileShape Map.empty 0 (SmoothDifference (Lit 0.5) (Sphere (Lit 2)) (Sphere (Lit 1)))
+                `shouldBe` [1, 2, 0, 0, 1, 1, 0, 0, 14, 0.5, 0, 0]
+
+        it "evaluates the blend radius from variables" $
+            drop 8 (compileShape (Map.fromList [("k", VNum 0.25)]) 0
+                        (SmoothUnion (Var "k") (Sphere (Lit 1)) (Sphere (Lit 1))))
+                `shouldBe` [13, 0.25, 0, 0]
+
+        it "rejects a negative blend radius" $
+            validateValues (zip [1 ..] [Draw (SmoothUnion (Lit (-1)) (Sphere (Lit 1)) (Sphere (Lit 1)))])
+                `shouldBe` Left ("smooth_union blend radius can't be negative (got -1)", 1)
+
+        it "checks names inside smooth operations" $
+            validateScript [Draw (SmoothIntersection (Var "nope") (Sphere (Lit 1)) (Sphere (Lit 1)))]
+                `shouldBe` Left ("nope", "Unknown variable 'nope'")

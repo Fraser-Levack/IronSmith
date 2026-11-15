@@ -153,6 +153,11 @@ async fn run() -> Result<()> {
     }
 
     let mut camera = Camera::new();
+    // Mouse control in the viewer window: left-drag orbits, right- or
+    // middle-drag pans. `drag` is the button being held, `cursor` the last
+    // cursor position (physical pixels) while it is.
+    let mut drag: Option<MouseButton> = None;
+    let mut cursor: Option<winit::dpi::PhysicalPosition<f64>> = None;
     let mut last_frame = std::time::Instant::now();
     let mut pending_shots: Vec<PendingShot> = Vec::new();
 
@@ -162,6 +167,44 @@ async fn run() -> Result<()> {
             Event::WindowEvent { event, window_id } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(ps) => renderer.resize(ps),
+
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let draggable = matches!(
+                        button,
+                        MouseButton::Left | MouseButton::Right | MouseButton::Middle
+                    );
+                    match state {
+                        ElementState::Pressed if draggable && drag.is_none() => {
+                            drag = Some(button)
+                        }
+                        ElementState::Released if drag == Some(button) => drag = None,
+                        _ => {}
+                    }
+                    camera.dragging = drag.is_some();
+                }
+
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let (Some(button), Some(last)) = (drag, cursor) {
+                        let dx = (position.x - last.x) as f32;
+                        let dy = (position.y - last.y) as f32;
+                        if button == MouseButton::Left {
+                            let scale = window.scale_factor() as f32;
+                            camera.drag_orbit(dx / scale, dy / scale);
+                        } else {
+                            let height = window.inner_size().height.max(1) as f32;
+                            camera.drag_pan(dx / height, dy / height);
+                        }
+                    }
+                    cursor = Some(position);
+                }
+
+                // A release outside the window may never be reported, so
+                // end any drag when the cursor leaves or focus is lost.
+                WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                    drag = None;
+                    cursor = None;
+                    camera.dragging = false;
+                }
 
                 WindowEvent::MouseWheel { delta, .. } => {
                     camera.scroll_zoom(match delta {

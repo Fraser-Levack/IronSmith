@@ -6,6 +6,13 @@ const ORBIT_STEP: f32 = 0.003;
 /// 60 fps frame.
 const EASE_STEP: f32 = 0.1;
 
+/// Orbit rotation per logical pixel of mouse drag (radians).
+const ORBIT_PER_PIXEL: f32 = 0.008;
+/// The raymarcher's focal length (`1.5 * ww` in the scene shader): at
+/// distance `d` from the camera the window shows `2 * d / FOCAL` units top
+/// to bottom. Used so a pan drag keeps the target under the cursor.
+const FOCAL: f32 = 1.5;
+
 /// One keyframe of the scripted camera animation. Angles are in radians
 /// (the Haskell compiler converts from the degrees users write).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +41,9 @@ pub struct Camera {
     target_pan_z: f32,
 
     pub auto_orbit: bool,
+    /// A mouse button is held in the viewer window: auto-orbit pauses so it
+    /// doesn't fight the drag.
+    pub dragging: bool,
 
     // Scripted camera animation (CMD:SET_ANIM / CMD:ANIM_PLAY / CMD:ANIM_STOP)
     pub anim_track: Vec<CamKey>,
@@ -63,6 +73,7 @@ impl Camera {
             target_pan_y: 0.0,
             target_pan_z: 0.0,
             auto_orbit: true,
+            dragging: false,
             anim_track: Vec::new(),
             anim_playing: false,
             anim_time: 0.0,
@@ -177,6 +188,27 @@ impl Camera {
         self.target_dist = (self.target_dist - y_delta * 2.0).clamp(2.0, 100.0);
     }
 
+    /// Turntable orbit from a mouse drag of (dx, dy) logical pixels (y
+    /// down). The model follows the cursor: dragging right turns its front
+    /// to the right, dragging up tips it towards you.
+    pub fn drag_orbit(&mut self, dx: f32, dy: f32) {
+        self.target_yaw -= dx * ORBIT_PER_PIXEL;
+        self.target_pitch = (self.target_pitch + dy * ORBIT_PER_PIXEL).clamp(-1.5, 1.5);
+    }
+
+    /// Pan from a mouse drag, given as fractions of the window's height
+    /// (y down). Moves the target sideways along the camera's right vector
+    /// and vertically along world up, scaled so the point being looked at
+    /// stays under the cursor at any zoom level.
+    pub fn drag_pan(&mut self, dx_frac: f32, dy_frac: f32) {
+        let units = 2.0 * self.target_dist / FOCAL;
+        let (sin_yaw, cos_yaw) = self.target_yaw.sin_cos();
+        // Camera right vector is (cos yaw, 0, -sin yaw), as in CMD:PAN_RIGHT.
+        self.target_pan_x -= cos_yaw * dx_frac * units;
+        self.target_pan_z += sin_yaw * dx_frac * units;
+        self.target_pan_y += dy_frac * units;
+    }
+
     /// Total length of the animation in seconds (time of the last keyframe).
     pub fn anim_duration(&self) -> f32 {
         self.anim_track.last().map(|k| k.t).unwrap_or(0.0)
@@ -248,7 +280,7 @@ impl Camera {
         // Scale them by the real frame time so the camera moves at the same
         // speed on a 30, 60 or 144 Hz display.
         let frames = (dt * TUNED_FPS).max(0.0);
-        if self.auto_orbit {
+        if self.auto_orbit && !self.dragging {
             self.target_yaw -= ORBIT_STEP * frames;
         }
 
@@ -425,6 +457,40 @@ mod tests {
             (dist_fast - dist_slow).abs() < 1e-2,
             "{dist_fast} vs {dist_slow}"
         );
+    }
+
+    #[test]
+    fn drag_orbit_follows_the_cursor_and_clamps_pitch() {
+        let mut cam = Camera::new();
+        cam.drag_orbit(100.0, 0.0);
+        assert!(cam.target_yaw < 0.0, "dragging right turns the camera left");
+        cam.drag_orbit(0.0, -100_000.0);
+        assert_eq!(cam.target_pitch, -1.5);
+        cam.drag_orbit(0.0, 100_000.0);
+        assert_eq!(cam.target_pitch, 1.5);
+    }
+
+    #[test]
+    fn drag_pan_moves_one_window_height_of_world_per_window_height_of_drag() {
+        let mut cam = Camera::new(); // yaw 0: right is +X
+        cam.drag_pan(0.5, 0.0);
+        // Half the window at distance 20 is 20/1.5 units; the scene follows
+        // the cursor right, so the target moves left.
+        assert!((cam.target_pan_x + 20.0 / 1.5).abs() < 1e-4);
+        assert_eq!(cam.target_pan_z, 0.0);
+        cam.drag_pan(0.0, 0.25);
+        assert!((cam.target_pan_y - 10.0 / 1.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dragging_pauses_auto_orbit() {
+        let mut cam = Camera::new();
+        cam.dragging = true;
+        cam.update_lerp(1.0);
+        assert_eq!(cam.target_yaw, 0.0);
+        cam.dragging = false;
+        cam.update_lerp(1.0);
+        assert!(cam.target_yaw < 0.0);
     }
 
     #[test]

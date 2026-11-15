@@ -298,6 +298,7 @@ spanWidget (a, t)
 keywordAttr :: String -> AttrName
 keywordAttr w
     | w `elem` ["cube", "sphere", "cylinder", "cone", "torus"] = attrName "shape"
-    | w `elem` ["union", "difference", "intersection", "group"] = attrName "csg"
+    | w `elem` ["union", "difference", "intersection", "group",
+                "smooth_union", "smooth_difference", "smooth_intersection"] = attrName "csg"
     | w `elem` ["move", "rotateX", "rotateY", "rotateZ", "paint", "material", "light", "camera"] = attrName "transform"
     | otherwise = plainAttr
