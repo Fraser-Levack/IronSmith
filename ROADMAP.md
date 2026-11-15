@@ -62,6 +62,11 @@ Not blocking, but worth doing before or soon after 1.0.
 - [ ] Editor/viewer version handshake, so a stale `ironsmith-viewer` on PATH
   is reported instead of failing in confusing ways.
 - [ ] Run `hlint` in CI (it isn't installed on the dev machine yet).
+- [ ] **Unpin Rust.** The toolchain is pinned to 1.86.0 (`rust-toolchain.toml`)
+  because winit 0.29's `objc2 0.4` no longer compiles on current rustc on
+  macOS. Upgrade to winit 0.30 (its `ApplicationHandler` event loop) and
+  wgpu to match, then move the pin forward and fix the newer clippy lints
+  (e.g. `chunks_exact(4)` -> `as_chunks::<4>()`).
 
 ### Phase 4 — Release candidate
 
