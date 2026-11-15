@@ -69,8 +69,11 @@ jobs:
             libxinerama-dev libxcursor-dev libxi-dev libx11-dev \
             libudev-dev pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Keep in sync with rust-toolchain.toml (floating stable broke the
+      # macOS build and added new clippy lints without any code change).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.86.0
           components: rustfmt, clippy
 
       - name: Cache cargo
