@@ -4,6 +4,7 @@ module Evaluator where
 import AST
 import qualified Data.Map as Map
 import Numeric (readHex)
+import Control.Monad (when)
 
 data IronValue = VNum Float | VShape Shape
 type Env = Map.Map String IronValue
@@ -56,29 +57,39 @@ resolveColor _ = [0.8, 0.4, 0.1] -- Default Forge Orange
 --   broken bytecode. Returns the offending identifier (for line lookup)
 --   and a human-readable message.
 validateScript :: Script -> Either (String, String) ()
-validateScript = go [] []
+validateScript = either (\(_, ident, msg) -> Left (ident, msg)) Right . validateScriptAt
+
+-- | 'validateScript', also saying which statement (0-based index) failed,
+--   so the editor can point at the right line even when the name appears
+--   earlier in the file too.
+validateScriptAt :: Script -> Either (Int, String, String) ()
+validateScriptAt = go 0 [] []
   where
-    go :: [String] -> [String] -> Script -> Either (String, String) ()
-    go _ _ [] = Right ()
-    go nums shapes (stmt:rest) = case stmt of
-        -- `a = b` where b is a shape defines a shape alias, not a number
-        Assign name (Var ref) | ref `elem` shapes -> do
-            go nums (name:shapes) rest
-        Assign name expr -> do
-            checkExpr nums shapes expr
-            go (name:nums) shapes rest
-        AssignShape name shape -> do
-            checkShape nums shapes shape
-            go nums (name:shapes) rest
-        Draw shape -> do
-            checkShape nums shapes shape
-            go nums shapes rest
-        Light ex ey ez ei -> do
-            mapM_ (checkExpr nums shapes) [ex, ey, ez, ei]
-            go nums shapes rest
-        CameraKey et eyaw ep ed etx ety etz -> do
+    go :: Int -> [String] -> [String] -> Script -> Either (Int, String, String) ()
+    go _ _ _ [] = Right ()
+    go i nums shapes (stmt:rest) = case checkStmt nums shapes stmt of
+        Left (ident, msg) -> Left (i, ident, msg)
+        Right ()          -> let (nums', shapes') = defines nums shapes stmt
+                             in go (i + 1) nums' shapes' rest
+
+    checkStmt nums shapes stmt = case stmt of
+        Assign _ (Var ref) | ref `elem` shapes -> Right () -- shape alias
+        Assign _ expr        -> checkExpr nums shapes expr
+        AssignShape _ shape  -> checkShape nums shapes shape
+        Draw shape           -> checkShape nums shapes shape
+        Light ex ey ez ei    -> mapM_ (checkExpr nums shapes) [ex, ey, ez, ei]
+        CameraKey et eyaw ep ed etx ety etz ->
             mapM_ (checkExpr nums shapes) [et, eyaw, ep, ed, etx, ety, etz]
-            go nums shapes rest
+
+    -- The (numbers, shapes) defined after a statement. Redefining a name
+    -- with the other kind replaces it: after `a = 5` then `a = cube(...)`,
+    -- `a` is only a shape (the evaluator agrees).
+    defines nums shapes stmt = case stmt of
+        -- `a = b` where b is a shape defines a shape alias, not a number
+        Assign name (Var ref) | ref `elem` shapes -> (filter (/= name) nums, name : shapes)
+        Assign name _       -> (name : nums, filter (/= name) shapes)
+        AssignShape name _  -> (filter (/= name) nums, name : shapes)
+        _                   -> (nums, shapes)
 
     checkExpr :: [String] -> [String] -> Expr -> Either (String, String) ()
     checkExpr nums shapes expr = case expr of
@@ -118,6 +129,80 @@ validateScript = go [] []
       where
         ce = checkExpr nums shapes
         cs = checkShape nums shapes
+
+-- | Check the *values* a script produces, statement by statement, after
+--   'validateScript' has checked its names. Catches what would otherwise
+--   render as nothing or garbage without any error: numbers that aren't
+--   finite (e.g. division by zero), negative sizes, and zero or negative
+--   scale factors. Each statement is paired with its line (see
+--   'Parser.pScriptLines'); errors point at the statement that evaluated
+--   the bad value, which for a shape is the line that draws it, since
+--   shape expressions are evaluated when drawn.
+validateValues :: [(Int, Statement)] -> Either (String, Int) ()
+validateValues = go Map.empty
+  where
+    go :: Env -> [(Int, Statement)] -> Either (String, Int) ()
+    go _ [] = Right ()
+    go env ((line, stmt):rest) = case stmt of
+        Assign name (Var ref) | Just (VShape s) <- Map.lookup ref env ->
+            go (Map.insert name (VShape s) env) rest
+        Assign name expr -> do
+            let v = evalExpr env expr
+            finite line ("'" ++ name ++ "'") v
+            go (Map.insert name (VNum v) env) rest
+        AssignShape name shape ->
+            go (Map.insert name (VShape (resolveShape env shape)) env) rest
+        Draw shape -> do
+            checkShape env line (resolveShape env shape)
+            go env rest
+        Light ex ey ez ei -> do
+            mapM_ (finite line "light(...)" . evalExpr env) [ex, ey, ez, ei]
+            go env rest
+        CameraKey et eyaw ep ed etx ety etz -> do
+            mapM_ (finite line "camera(...)" . evalExpr env) [et, eyaw, ep, ed, etx, ety, etz]
+            go env rest
+
+    finite line what v
+        | isNaN v || isInfinite v =
+            Left (what ++ " is not a finite number (division by zero?)", line)
+        | otherwise = Right ()
+
+    checkShape :: Env -> Int -> Shape -> Either (String, Int) ()
+    checkShape env line shape = case shape of
+        Cube a b c       -> sizes "cube" [("width", a), ("height", b), ("depth", c)]
+        Sphere a         -> sizes "sphere" [("radius", a)]
+        Cylinder a b     -> sizes "cylinder" [("radius", a), ("height", b)]
+        Cone a b c       -> sizes "cone" [("radius", a), ("top radius", b), ("height", c)]
+        Torus a b        -> sizes "torus" [("radius", a), ("tube radius", b)]
+        Move a b c s     -> nums "move" [a, b, c] >> sub s
+        RotateX a s      -> nums "rotateX" [a] >> sub s
+        RotateY a s      -> nums "rotateY" [a] >> sub s
+        RotateZ a s      -> nums "rotateZ" [a] >> sub s
+        Repeat a b c s   -> sizes "repeat" [("X spacing", a), ("Y spacing", b), ("Z spacing", c)] >> sub s
+        Scale a b c s    -> do
+            nums "scale" [a, b, c]
+            mapM_ (\e -> when (val e <= 0) $
+                       Left ("scale factors must be greater than 0 (got " ++ showNum (val e) ++ ")", line))
+                  [a, b, c]
+            sub s
+        Group ss         -> mapM_ sub ss
+        Union a b        -> sub a >> sub b
+        Intersection a b -> sub a >> sub b
+        Difference a b   -> sub a >> sub b
+        Paint _ ss       -> mapM_ sub ss
+        Material _ ss    -> mapM_ sub ss
+        ShapeRef _       -> Right ()
+      where
+        sub = checkShape env line
+        val = evalExpr env
+        nums what = mapM_ (finite line (what ++ "(...)") . val)
+        sizes what = mapM_ $ \(arg, e) -> do
+            let v = val e
+            finite line (what ++ " " ++ arg) v
+            when (v < 0) $
+                Left (what ++ " " ++ arg ++ " can't be negative (got " ++ showNum v ++ ")", line)
+
+    showNum v = if v == fromIntegral (round v :: Int) then show (round v :: Int) else show v
 
 -- | Replace every ShapeRef with the shape it referred to at this point in
 --   the script. Stored shapes are therefore self-contained: later

@@ -1,3 +1,11 @@
+/// Frame rate the per-frame camera constants below were tuned at.
+const TUNED_FPS: f32 = 60.0;
+/// Auto-orbit yaw change per 60 fps frame (radians).
+const ORBIT_STEP: f32 = 0.003;
+/// Fraction of the remaining distance to its target the camera covers per
+/// 60 fps frame.
+const EASE_STEP: f32 = 0.1;
+
 /// One keyframe of the scripted camera animation. Angles are in radians
 /// (the Haskell compiler converts from the degrees users write).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -236,20 +244,25 @@ impl Camera {
             return;
         }
 
+        // Orbit speed and easing were tuned as per-frame steps at 60 fps.
+        // Scale them by the real frame time so the camera moves at the same
+        // speed on a 30, 60 or 144 Hz display.
+        let frames = (dt * TUNED_FPS).max(0.0);
         if self.auto_orbit {
-            self.target_yaw -= 0.003;
+            self.target_yaw -= ORBIT_STEP * frames;
         }
 
         self.target_pitch = self.target_pitch.clamp(-1.5, 1.5);
 
-        // The Lerp Math
-        self.yaw += (self.target_yaw - self.yaw) * 0.1;
-        self.pitch += (self.target_pitch - self.pitch) * 0.1;
-        self.dist += (self.target_dist - self.dist) * 0.1;
+        // Exponential easing: close EASE_STEP of the gap per 60 fps frame.
+        let k = 1.0 - (1.0 - EASE_STEP).powf(frames);
+        self.yaw += (self.target_yaw - self.yaw) * k;
+        self.pitch += (self.target_pitch - self.pitch) * k;
+        self.dist += (self.target_dist - self.dist) * k;
 
-        self.pan_x += (self.target_pan_x - self.pan_x) * 0.1;
-        self.pan_y += (self.target_pan_y - self.pan_y) * 0.1;
-        self.pan_z += (self.target_pan_z - self.pan_z) * 0.1;
+        self.pan_x += (self.target_pan_x - self.pan_x) * k;
+        self.pan_y += (self.target_pan_y - self.pan_y) * k;
+        self.pan_z += (self.target_pan_z - self.pan_z) * k;
     }
 }
 
@@ -383,9 +396,35 @@ mod tests {
         let mut cam = Camera::new();
         cam.auto_orbit = false;
         cam.target_dist = 30.0;
-        cam.update_lerp(0.016);
-        // Lerp by 0.1 towards target: 20 + (30-20)*0.1 = 21
-        assert!((cam.dist - 21.0).abs() < 1e-5);
+        cam.update_lerp(1.0 / 60.0);
+        // One 60 fps frame eases 10% of the way: 20 + (30-20)*0.1 = 21
+        assert!((cam.dist - 21.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn camera_speed_does_not_depend_on_frame_rate() {
+        // One second at 144 fps and at 30 fps must end up in the same place.
+        let run = |fps: u32| {
+            let mut cam = Camera::new();
+            cam.target_dist = 50.0;
+            for _ in 0..fps {
+                cam.update_lerp(1.0 / fps as f32);
+            }
+            (cam.yaw, cam.dist)
+        };
+        let (yaw_fast, dist_fast) = run(144);
+        let (yaw_slow, dist_slow) = run(30);
+        // Easing toward a moving (orbiting) target lags very slightly
+        // differently per frame rate; before dt scaling, 144 fps orbited
+        // 2.4x faster than 60 fps.
+        assert!(
+            (yaw_fast - yaw_slow).abs() < 1e-2,
+            "{yaw_fast} vs {yaw_slow}"
+        );
+        assert!(
+            (dist_fast - dist_slow).abs() < 1e-2,
+            "{dist_fast} vs {dist_slow}"
+        );
     }
 
     #[test]

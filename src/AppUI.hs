@@ -32,8 +32,16 @@ drawSplash st =
         , padAll 1 recentsWidget
         , hBorder
         , padAll 1 commandsWidget
+        , statusWidget
         ]
   where
+    -- Errors from the start screen (unreadable recent file, viewer that
+    -- failed to start...) would otherwise be invisible until editing.
+    statusWidget = case _status st of
+        ErrorMsg e _ -> padLeftRight 1 $ padBottom (Pad 1) $ withAttr (attrName "error") $
+                        hLimit 90 $ vLimit 4 $ vBox (map str (lines e))
+        Info msg     -> padLeftRight 1 $ padBottom (Pad 1) $ withAttr (attrName "saved") $ str msg
+        _            -> emptyWidget
     recentsWidget = vBox $
         [ withAttr (attrName "title") $ str "--- Recent Files ---"
         , str " "
@@ -47,7 +55,8 @@ drawSplash st =
         , str " "
         , withAttr (attrName "title") $ str "[ Press 'G' to open Settings ]"
         , str " "
-        , str "[ Press ESC to Quit ]"
+        , str ("[ Press ESC to Quit | " ++ formatKeyCombo (keybindingFor (_config st) CmdRelaunchViewer)
+               ++ " relaunches the viewer window ]")
         ]
 
 -- | SPLASH LOGO WIDGET
@@ -142,12 +151,17 @@ progressBarText p =
 drawUnsavedPrompt :: AppState -> Widget Name
 drawUnsavedPrompt st = center $ borderWithLabel (str " Unsaved Changes ") $ padAll 2 $ vBox
     [ str "You have unsaved changes in your forge!"
-    , str "Would you like to save before returning to the menu?"
+    , str ("Would you like to save before " ++ action ++ "?")
     , str " "
-    , withAttr (attrName "success") $ str "[ Press ENTER to Save & Exit ]"
-    , withAttr (attrName "error")   $ str "[ Press 'N' to Discard Changes ]"
+    , withAttr (attrName "success") $ str ("[ Press ENTER to Save & " ++ verb ++ " ]")
+    , withAttr (attrName "error")   $ str ("[ Press 'N' to Discard Changes & " ++ verb ++ " ]")
     , str "[ Press ESC to Cancel ]"
     ]
+  where
+    (action, verb) = case _afterPrompt st of
+        Just ToQuit      -> ("quitting", "Quit")
+        Just (ToOpen p)  -> ("opening " ++ takeFileName p, "Open")
+        _                -> ("returning to the menu", "Exit")
 
 drawSaveDialog :: AppState -> Widget Name
 drawSaveDialog st = center $ borderWithLabel (str " Save As (.irsm) ") $ padAll 2 $ vBox

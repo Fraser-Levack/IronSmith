@@ -22,7 +22,7 @@ cabal build
 $ironsmithExe = (cabal list-bin ironsmith).Trim()
 Pop-Location
 
-$pkgName = "IronSmith-v$Version-windows"
+$pkgName = "IronSmith-v$Version-windows-x86_64"
 $pkgDir = Join-Path $RepoRoot "dist\$pkgName"
 
 if (Test-Path $pkgDir) { Remove-Item $pkgDir -Recurse -Force }

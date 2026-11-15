@@ -80,15 +80,17 @@ To run IronSmith from source, you will need:
 
 ## 🛠️ Quick Start
 
-### Option A: Download the latest release (Windows)
+### Option A: Download the latest release
 
-Grab the prebuilt `IronSmith-v0.1.0-windows.zip` from the [Releases page](https://github.com/Fraser-Levack/IronSmith/releases), extract it, and run `ironsmith.exe` (or run `install.ps1` to add IronSmith to your PATH).
+Grab the archive for your platform (`IronSmith-vX.Y.Z-windows-x86_64.zip`, `...-linux-x86_64.tar.gz` or `...-macos-arm64.tar.gz`) from the [Releases page](https://github.com/Fraser-Levack/IronSmith/releases) and extract it. Run `ironsmith` from that folder, or run the bundled `install.ps1` (Windows) / `install.sh` (Linux/macOS) to put it on your PATH. Each release also lists SHA-256 checksums in `SHA256SUMS.txt`.
+
+Then open the editor with `ironsmith`, or straight onto a model with `ironsmith model.irsm`. `ironsmith --version` prints the version.
 
 ### Option B: Build from source
 
 **1. Clone the repository:**
 ```bash
-git clone [https://github.com/yourusername/IronSmith.git](https://github.com/yourusername/IronSmith.git)
+git clone https://github.com/Fraser-Levack/IronSmith.git
 cd IronSmith
 ```
 
@@ -102,10 +104,9 @@ cargo build --release
 cd ..
 ```
 
-**3. Run the Haskell TUI:**
+**3. Run the Haskell TUI** (from the repository root):
 
 ```bash
-cd IronSmith
 cabal run ironsmith
 ```
 
@@ -241,7 +242,7 @@ Frames are rendered offline at a fixed timestep (`video_fps` in `ironsmith.toml`
 
 ## 🎨 Filters (Moddable Post-Processing)
 
-IronSmith's viewport is moddable: the renderer applies a user-editable GLSL **filter** on top of the scene every frame. On first launch the viewer creates a `filters/` folder in your IronSmith config directory (`%APPDATA%\ironsmith\filters` on Windows, `~/.config/ironsmith/filters` on Linux/macOS) containing the built-in examples:
+IronSmith's viewport is moddable: the renderer applies a user-editable GLSL **filter** on top of the scene every frame. On first launch the viewer creates a `filters/` folder in your IronSmith config directory (`%APPDATA%\ironsmith\filters` on Windows, `~/Library/Application Support/ironsmith/filters` on macOS, `~/.config/ironsmith/filters` on Linux) containing the built-in examples:
 
 * **`edge_detection`** — Sobel edges: glowing outlines over a dimmed scene
 * **`heatmap`** — thermal-camera look mapping brightness to a cold→hot ramp
@@ -314,10 +315,12 @@ IronSmith is an open-source forge, and contributions of any size are highly appr
 6. **Open a Pull Request**
 
 ### Areas We Need Help With
-* **Graphics (Rust):** Implementing material and color parsing in the GLSL generation.
-* **Language (Haskell):** Adding variables, looping constructs, or new primitives to the `.irsm` language.
-* **Tooling:** Exporting evaluated SDFs to standard 3D formats (`.obj` or `.stl`).
-* **Quality of Life:** Expanding the Rust viewer to include more controls.
+See [ROADMAP.md](ROADMAP.md) for what's planned. Good places to start:
+
+* **Graphics (Rust):** Mouse orbit/pan in the viewer window, new shader effects.
+* **Language (Haskell):** Looping constructs, functions, smooth CSG, new primitives.
+* **Tooling:** STL export, faster (parallel) mesh export.
+* **Packaging:** Testing the Linux/macOS builds, package-manager manifests.
 
 ### Development Guidelines
 * **Haskell:** Please ensure your code compiles cleanly. Running your code through standard linters like `hlint` is highly encouraged.
@@ -330,4 +333,4 @@ IronSmith is an open-source forge, and contributions of any size are highly appr
 *(Want to see your name here? Check out the section and open a PR!)*
 
 ## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENCE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

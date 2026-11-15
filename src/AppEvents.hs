@@ -19,10 +19,10 @@ import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, makeA
 import System.FilePath (replaceExtension, takeExtension, dropExtension)
 import Data.Char (isDigit, toLower)
 import Data.List (sort, elemIndex, intercalate)
-import Data.Maybe (listToMaybe, fromMaybe)
+import Data.Maybe (listToMaybe, fromMaybe, isJust)
 
 import AppState
-import Config (loadConfig, defaultConfigText, readFileStrict, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, cfgAutoCompileDelayMs, IronConfig)
+import Config (loadConfig, defaultConfigText, readFileStrict, writeFileUtf8, cfgDefaultObjectColor, cfgExportResolution, cfgFilter, cfgVideoFps, cfgAutoCompileDelayMs, IronConfig)
 import AppCore
 import Selection (deleteRange, selectedText, normalisePaste)
 import qualified Data.Text as T
@@ -31,37 +31,72 @@ import qualified Data.Text.Encoding as TE
 -- | Write `code` to `path`, recompile/preview it, and record it in the
 --   recent-files list. Shared by Ctrl+S, the unsaved-changes prompt, and
 --   the Save dialog, which each layer on their own mode/state transitions.
-writeAndCompile :: AppState -> FilePath -> String -> IO (AppStatus, [FilePath])
+--
+--   Returns Left with a message if the file couldn't be written (missing
+--   folder, no permission, locked by another program...); the buffer is
+--   then still unsaved and callers must leave it marked dirty.
+writeAndCompile :: AppState -> FilePath -> String -> IO (Either String (AppStatus, [FilePath]))
 writeAndCompile st path code = do
-    writeFile path code
-    newErr <- compileAndSave (cfgDefaultObjectColor (_config st)) True code
-    newRecents <- saveRecent path (_recentFiles st)
-    let newStatus = case newErr of
-            Nothing -> Saved
-            Just (e, lineNum) -> ErrorMsg e lineNum
-    return (newStatus, newRecents)
+    written <- tryIO (writeFileUtf8 path code)
+    case written of
+        Left e -> return (Left ("Could not save " ++ path ++ ": " ++ e))
+        Right () -> do
+            newErr <- compileAndSave (cfgDefaultObjectColor (_config st)) True code
+            newRecents <- saveRecent path (_recentFiles st)
+            let newStatus = case newErr of
+                    Nothing -> Saved
+                    Just (e, lineNum) -> ErrorMsg e lineNum
+            return (Right (newStatus, newRecents))
 
 -- | Load `path`'s contents into the editor, compile/preview it, and switch
---   to Editing mode. Shared by the splash screen's recent-files list and
---   the Open dialog.
+--   to Editing mode. Shared by the splash screen's recent-files list, the
+--   Open dialog, the unsaved-changes prompt and the command line. If the
+--   file can't be read, the current buffer is kept and the error shown.
 openFile :: AppState -> FilePath -> EventM Name AppState ()
 openFile st path = do
     absPath <- liftIO $ makeAbsolute path
-    content <- liftIO $ readFile path
-    _ <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True content
-    newRecents <- liftIO $ saveRecent absPath (_recentFiles st)
-    put (st { _mode = Editing
-            , _currentFile = Just absPath
-            , _editor = E.editor CodeEditor Nothing content
-            , _status = Normal
-            , _recentFiles = newRecents
-            , _isDirty = False
-            , _undoStack = []
-            , _redoStack = []
-            , _pendingUndoSnapshot = True
-            , _selAnchor = Nothing
-            , _mouseDragging = False
-            })
+    loaded <- liftIO $ tryIO (readFileStrict path)
+    case loaded of
+        Left e ->
+            put (st { _status = ErrorMsg ("Could not open " ++ path ++ ": " ++ e) 0
+                    , _mode = if _mode st == UnsavedPrompt then Editing else _mode st
+                    , _afterPrompt = Nothing })
+        Right content -> do
+            compiled <- liftIO $ compileAndSave (cfgDefaultObjectColor (_config st)) True content
+            newRecents <- liftIO $ saveRecent absPath (_recentFiles st)
+            put (st { _mode = Editing
+                    , _currentFile = Just absPath
+                    , _editor = E.editor CodeEditor Nothing content
+                    , _status = maybe Normal (uncurry ErrorMsg) compiled
+                    , _recentFiles = newRecents
+                    , _isDirty = False
+                    , _undoStack = []
+                    , _redoStack = []
+                    , _pendingUndoSnapshot = True
+                    , _selAnchor = Nothing
+                    , _mouseDragging = False
+                    , _afterPrompt = Nothing
+                    })
+
+-- | Finish what the unsaved-changes prompt interrupted, once the buffer
+--   has been saved or the user chose to discard it.
+continueAfterPrompt :: AfterPrompt -> EventM Name AppState ()
+continueAfterPrompt next = do
+    st <- get
+    let st' = st { _afterPrompt = Nothing }
+    case next of
+        ToSplash    -> put (st' { _mode = Splash, _isDirty = False })
+        ToQuit      -> put st' >> halt
+        ToOpen path -> openFile st' path
+
+-- | Ask about unsaved changes before doing `next`, or just do it if the
+--   buffer is clean.
+guardUnsaved :: AfterPrompt -> EventM Name AppState ()
+guardUnsaved next = do
+    st <- get
+    if _isDirty st
+        then put (st { _mode = UnsavedPrompt, _afterPrompt = Just next })
+        else continueAfterPrompt next
 
 -- | GLOBAL ROUTER
 handleEvent :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
@@ -98,7 +133,13 @@ handleEvent _ (AppEvent (ExportFinished result)) = do
             Left (e, lineNum)  -> ErrorMsg e lineNum
     put (st { _exportProgress = Nothing, _status = newStatus })
 
-handleEvent _ (VtyEvent (V.EvKey (V.KChar 'q') [V.MCtrl])) = halt -- Global Killswitch
+-- Global quit. With unsaved changes it asks first (save / discard /
+-- cancel), from any screen; inside that prompt it just retargets it.
+handleEvent _ (VtyEvent (V.EvKey (V.KChar 'q') [V.MCtrl])) = do
+    st <- get
+    if _mode st == UnsavedPrompt
+        then put (st { _afterPrompt = Just ToQuit })
+        else guardUnsaved ToQuit
 handleEvent chan ev = do
     st <- get
     case _mode st of
@@ -139,16 +180,20 @@ handleSplash _ (VtyEvent (V.EvKey (V.KChar c) []))
         when (idx < length recents) $ do
             let path = recents !! idx
             exists <- liftIO $ doesFileExist path
-            when exists $ openFile st path
+            if exists
+                then openFile st path
+                else put (st { _status = ErrorMsg (path ++ " no longer exists") 0 })
+-- The viewer can be relaunched from the start screen too (e.g. when it
+-- failed to start with the TUI).
+handleSplash chan (VtyEvent (V.EvKey key mods)) = do
+    st <- get
+    when (lookupCommand (_config st) key mods == Just CmdRelaunchViewer) $
+        runCommand chan CmdRelaunchViewer
 handleSplash _ _ = return ()
 
 -- | 2. EDITING SCREEN
 handleEditing :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
-handleEditing _ (VtyEvent (V.EvKey V.KEsc [])) = do
-    st <- get
-    if _isDirty st
-        then put (st { _mode = UnsavedPrompt })
-        else put (st { _mode = Splash })
+handleEditing _ (VtyEvent (V.EvKey V.KEsc [])) = guardUnsaved ToSplash
 
 -- COMMAND DISPATCH: check the incoming key against the configured
 -- keybindings (Ctrl+P, Ctrl+S, Ctrl+O, Ctrl+G, Ctrl+E, Ctrl+R by default).
@@ -424,10 +469,33 @@ runCommand _ CmdSave = do
     case _currentFile st of
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
-            (newStatus, newRecents) <- liftIO $ writeAndCompile st path code
-            put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False })
+            result <- liftIO $ writeAndCompile st path code
+            case result of
+                Left e -> put (st { _status = ErrorMsg e 0 })
+                Right (newStatus, newRecents) ->
+                    put (st { _status = newStatus, _recentFiles = newRecents, _isDirty = False })
         Nothing ->
-            put (st { _mode = SaveDialog })
+            put (st { _mode = SaveDialog, _afterPrompt = Nothing })
+
+-- Bring the viewer back after its window was closed (or if it never
+-- started), then re-send settings, filter and the current scene. Reuses a
+-- viewer that is already running.
+runCommand _ CmdRelaunchViewer = do
+    st <- get
+    result <- liftIO ensureViewer
+    case result of
+        Left e -> put (st { _status = ErrorMsg e 0 })
+        Right newHandle -> do
+            let cfg = _config st
+                code = unlines $ E.getEditContents (_editor st)
+            liftIO $ sendConfig cfg
+            liftIO $ sendCommand ("CMD:SET_FILTER:" ++ _currentFilter st)
+            compiled <- liftIO $ compileAndSave (cfgDefaultObjectColor cfg) False code
+            let msg = if isJust newHandle then "Viewer relaunched" else "Viewer already running - scene re-sent"
+            put (st { _viewerHandle = maybe (_viewerHandle st) Just newHandle
+                    , _viewerMode = initialViewerMode cfg
+                    , _animPlaying = False
+                    , _status = maybe (Info msg) (uncurry ErrorMsg) compiled })
 
 -- | HELPER: Runs standard editor inputs and triggers compilation
 --
@@ -536,7 +604,7 @@ startMeshExport chan ext exporter = do
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
                 outPath = replaceExtension path ext
-                resolution = cfgExportResolution (_config st)
+                resolution = clampExportResolution (cfgExportResolution (_config st))
                 color = cfgDefaultObjectColor (_config st)
             put (st { _exportProgress = Just 0.0 })
             _ <- liftIO $ forkIO $ do
@@ -655,20 +723,27 @@ copyToSystemClipboard txt = void $ forkIO $ void $ try' $
 handleUnsavedPrompt :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
 handleUnsavedPrompt _ (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
-    put (st { _mode = Editing })
+    put (st { _mode = Editing, _afterPrompt = Nothing })
 
-handleUnsavedPrompt _ (VtyEvent (V.EvKey (V.KChar 'n') [])) = do
+-- Discard the changes and carry on.
+handleUnsavedPrompt _ (VtyEvent (V.EvKey (V.KChar c) [])) | c `elem` "nN" = do
     st <- get
-    put (st { _mode = Splash, _isDirty = False })
-handleUnsavedPrompt chan (VtyEvent (V.EvKey (V.KChar 'N') [])) = handleUnsavedPrompt chan (VtyEvent (V.EvKey (V.KChar 'n') []))
+    continueAfterPrompt (fromMaybe ToSplash (_afterPrompt st))
 
+-- Save, then carry on. A buffer with no file yet goes through Save As
+-- first, which continues afterwards (see handleSaveDialog).
 handleUnsavedPrompt _ (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
+    let next = fromMaybe ToSplash (_afterPrompt st)
     case _currentFile st of
         Just path -> do
             let code = unlines $ E.getEditContents (_editor st)
-            (_, newRecents) <- liftIO $ writeAndCompile st path code
-            put (st { _mode = Splash, _isDirty = False, _recentFiles = newRecents })
+            result <- liftIO $ writeAndCompile st path code
+            case result of
+                Left e -> put (st { _mode = Editing, _afterPrompt = Nothing, _status = ErrorMsg e 0 })
+                Right (newStatus, newRecents) -> do
+                    put (st { _isDirty = False, _recentFiles = newRecents, _status = newStatus })
+                    continueAfterPrompt next
         Nothing ->
             put (st { _mode = SaveDialog })
 handleUnsavedPrompt _ _ = return ()
@@ -678,26 +753,33 @@ handleUnsavedPrompt _ _ = return ()
 handleSaveDialog :: BChan CustomEvent -> BrickEvent Name CustomEvent -> EventM Name AppState ()
 handleSaveDialog _ (VtyEvent (V.EvKey V.KEsc [])) = do
     st <- get
-    put (st { _mode = Editing })
+    put (st { _mode = Editing, _afterPrompt = Nothing })
 
 handleSaveDialog _ (VtyEvent (V.EvKey V.KEnter [])) = do
     st <- get
     let filenameLines = E.getEditContents (_saveInput st)
-        filename = if null filenameLines || null (head filenameLines) 
-                   then "untitled.irsm" 
+        filename = if null filenameLines || null (head filenameLines)
+                   then "untitled.irsm"
                    else head filenameLines
         code = unlines $ E.getEditContents (_editor st)
 
     absPath <- liftIO $ makeAbsolute filename
-    (newStatus, newRecents) <- liftIO $ writeAndCompile st absPath code
+    result <- liftIO $ writeAndCompile st absPath code
 
-    put (st { _mode = Editing
-            , _currentFile = Just absPath
-            , _saveInput = E.editor SaveEditor (Just 1) ""
-            , _status = newStatus
-            , _recentFiles = newRecents
-            , _isDirty = False
-            })
+    case result of
+        -- Keep the buffer (still dirty) and say why; the dialog has no
+        -- status line, so go back to the editor to show it.
+        Left e -> put (st { _mode = Editing, _afterPrompt = Nothing, _status = ErrorMsg e 0 })
+        Right (newStatus, newRecents) -> do
+            put (st { _mode = Editing
+                    , _currentFile = Just absPath
+                    , _saveInput = E.editor SaveEditor (Just 1) ""
+                    , _status = newStatus
+                    , _recentFiles = newRecents
+                    , _isDirty = False
+                    })
+            -- Reached from the unsaved-changes prompt: finish its action.
+            mapM_ continueAfterPrompt (_afterPrompt st)
 
 handleSaveDialog _ ev = do
     zoom saveInputLens $ E.handleEditorEvent ev
@@ -718,7 +800,7 @@ handleOpenDialog _ (VtyEvent (V.EvKey V.KEnter [])) = do
     
     exists <- liftIO $ doesFileExist path
     if exists
-        then openFile st path
+        then guardUnsaved (ToOpen path) -- don't drop unsaved work
         else put (st { _status = ErrorMsg "File not found!" 0 })
 
 handleOpenDialog _ ev = do
@@ -738,14 +820,18 @@ handleConfigEditing _ (VtyEvent (V.EvKey V.KEsc [])) = do
 handleConfigEditing _ (VtyEvent (V.EvKey (V.KChar 's') [V.MCtrl])) = do
     st <- get
     let content = unlines $ E.getEditContents (_configInput st)
-    configPath <- liftIO getConfigPath
-    liftIO $ writeFile configPath content
-    newConfig <- liftIO $ loadConfig configPath
-    liftIO $ sendConfig newConfig
-    let prevMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""]
+        prevMode = if _currentFile st == Nothing && E.getEditContents (_editor st) == [""]
                    then Splash else Editing
-    put (st { _mode = prevMode, _config = newConfig, _status = Saved
-            , _currentFilter = cfgFilter newConfig })
+    configPath <- liftIO getConfigPath
+    written <- liftIO $ tryIO (writeFileUtf8 configPath content)
+    case written of
+        Left e -> put (st { _mode = prevMode, _status = ErrorMsg ("Could not save settings: " ++ e) 0 })
+        Right () -> do
+            newConfig <- liftIO $ loadConfig configPath
+            liftIO $ sendConfig newConfig
+            put (st { _mode = prevMode, _config = newConfig, _status = Saved
+                    , _currentFilter = cfgFilter newConfig
+                    , _viewerMode = initialViewerMode newConfig })
 
 -- Everything else: pass through to the editor widget
 handleConfigEditing _ ev = do

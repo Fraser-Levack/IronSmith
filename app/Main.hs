@@ -5,24 +5,27 @@ import Brick.BChan (BChan, newBChan)
 import qualified Brick.Widgets.Edit as E
 import qualified Graphics.Vty as V
 import Graphics.Vty.CrossPlatform (mkVty)
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, makeAbsolute)
 import System.Environment (getArgs)
+import System.FilePath (takeExtension, takeFileName)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.State (put)
 
 import AppState
-import Config (loadConfig, defaultConfig, cfgDefaultObjectColor, cfgFilter)
+import Config (loadConfig, readFileStrict, cfgDefaultObjectColor, cfgFilter,
+               cfgLaunchViewerOnStart, cfgRestoreLastFile)
 import AppCore
 import AppUI
 import AppEvents
 import Cli (runCli)
 
-app :: BChan CustomEvent -> App AppState CustomEvent Name
-app chan = App
+app :: BChan CustomEvent -> EventM Name AppState () -> App AppState CustomEvent Name
+app chan startEvent = App
     { appDraw         = drawUI
     , appChooseCursor = showFirstCursor
     , appHandleEvent  = handleEvent chan 
-    , appStartEvent   = enableTerminalModes
+    , appStartEvent   = enableTerminalModes >> startEvent
     , appAttrMap      = const $ attrMap V.defAttr
         [ (attrName "error",    fg V.red)
         , (attrName "success", fg V.green)
@@ -55,49 +58,56 @@ enableTerminalModes = do
     mapM_ (\m -> when (V.supportsMode out m) $ liftIO (V.setMode out m True))
           [V.Mouse, V.BracketedPaste]
 
--- | With arguments, run the headless CLI (check/render/export); with none,
---   open the TUI editor.
+-- | With no arguments, open the TUI editor; with a single .irsm path, open
+--   the editor on that file; otherwise run the headless CLI
+--   (check/render/export).
 main :: IO ()
 main = do
     args <- getArgs
-    if null args then runTui else runCli args
+    case args of
+        []                                       -> runTui Nothing
+        [file] | takeExtension file == ".irsm"   -> runTui (Just file)
+        _                                        -> runCli args
 
-runTui :: IO ()
-runTui = do
+runTui :: Maybe FilePath -> IO ()
+runTui fileArg = do
     recents <- loadRecents
     configPath <- getConfigPath
     cfg <- loadConfig configPath    -- loads or creates ironsmith.toml
 
-    h <- launchViewer
-
-    -- Wait for the viewer's socket before sending anything: messages sent
-    -- earlier are silently dropped (the startup demo used to be lost).
-    _ <- waitForViewer 10
+    -- Reuse a viewer that is already open (e.g. from `ironsmith render`),
+    -- otherwise start one. A missing or broken viewer is reported in the
+    -- editor instead of crashing it; Ctrl+L retries.
+    viewer <- if cfgLaunchViewerOnStart cfg
+        then ensureViewer
+        else return (Right Nothing)
     sendConfig cfg
 
     demoPath <- getDemoPath
     demoExists <- doesFileExist demoPath
-    demoCode <- if demoExists then readFile demoPath else return "torus(4, 1)"
+    demoCode <- if demoExists
+        then either (const "torus(4, 1)") id <$> tryIO (readFileStrict demoPath)
+        else return "torus(4, 1)"
     _ <- compileAndSave (cfgDefaultObjectColor cfg) True demoCode
 
     chan <- newBChan 10
     
     let initialState = AppState
             { _mode         = Splash
-            , _viewerMode   = OrbitMode
+            , _viewerMode   = initialViewerMode cfg
             , _editor       = E.editor CodeEditor Nothing "" 
             , _saveInput    = E.editor SaveEditor (Just 1) "" 
             , _openInput    = E.editor OpenEditor (Just 1) ""
-            , _configInput  = E.editor ConfigEditor Nothing ""  -- NEW
+            , _configInput  = E.editor ConfigEditor Nothing ""
             , _paletteInput = E.editor PaletteEditor (Just 1) ""
             , _paletteSelected = 0
             , _currentFile  = Nothing
             , _recentFiles  = recents
-            , _status       = Normal
+            , _status       = either (`ErrorMsg` 0) (const Normal) viewer
             , _isDirty      = False
-            , _viewerHandle = Just h 
+            , _viewerHandle = either (const Nothing) id viewer
             , _editVersion  = 0
-            , _config       = cfg                               -- NEW
+            , _config       = cfg
             , _exportProgress = Nothing
             , _currentFilter = cfgFilter cfg
             , _animPlaying  = False
@@ -107,12 +117,33 @@ runTui = do
             , _selAnchor    = Nothing
             , _mouseDragging = False
             , _clipboard    = ""
+            , _afterPrompt  = Nothing
             }
-            
-    -- NEW: Boot up customMain instead of defaultMain
-    let buildVty = mkVty V.defaultConfig           -- FIX 3: Removed V. prefix
+
+    -- What to show first: the file named on the command line (a new,
+    -- not-yet-saved buffer if it doesn't exist), else the most recent
+    -- file when restore_last_file is on, else the start screen.
+    restoreFile <- case recents of
+        (r:_) | cfgRestoreLastFile cfg -> do
+            exists <- doesFileExist r
+            return (if exists then Just r else Nothing)
+        _ -> return Nothing
+    let startup = case (fileArg, restoreFile) of
+            (Just f, _) -> Just f
+            (_, r)      -> r
+    startEvent <- case startup of
+        Nothing -> return (return ())
+        Just f -> do
+            exists <- doesFileExist f
+            absPath <- makeAbsolute f
+            return $ if exists
+                then openFile initialState f
+                else put initialState { _mode = Editing, _currentFile = Just absPath
+                                      , _status = Info ("New file: " ++ takeFileName f ++ " (Ctrl+S to create it)") }
+
+    let buildVty = mkVty V.defaultConfig
     initialVty <- buildVty
-    finalState <- customMain initialVty buildVty (Just chan) (app chan) initialState
+    finalState <- customMain initialVty buildVty (Just chan) (app chan startEvent) initialState
     
     stopViewer (_viewerHandle finalState)
     putStrLn "Forge cold. Viewer closed."
